@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sag-rag.fullname" . }}-config
+data:
+  QDRANT_URL: "{{ .Values.config.QDRANT_URL }}"
+  ELASTIC_URL: "{{ .Values.config.ELASTIC_URL }}"
+  NEO4J_URI: "{{ .Values.config.NEO4J_URI }}"
+  NEO4J_USER: "{{ .Values.config.NEO4J_USER }}"
+  NEO4J_PASSWORD: "{{ .Values.config.NEO4J_PASSWORD }}"

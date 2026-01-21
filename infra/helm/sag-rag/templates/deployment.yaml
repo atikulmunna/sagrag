@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sag-rag.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "sag-rag.name" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "sag-rag.name" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "sag-rag.name" . }}
+    spec:
+      containers:
+        - name: backend
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8000
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: 8000
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: 8000
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          env:
+            - name: GEMINI_MODEL_NAME
+              value: "{{ .Values.env.GEMINI_MODEL_NAME }}"
+{{- if .Values.env.GEMINI_API_KEY }}
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sag-rag.fullname" . }}-gemini
+                  key: GEMINI_API_KEY
+{{- end }}
+            - name: OTEL_ENABLED
+              value: "{{ .Values.env.OTEL_ENABLED }}"
+            - name: OTEL_SERVICE_NAME
+              value: "{{ .Values.env.OTEL_SERVICE_NAME }}"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "{{ .Values.env.OTEL_EXPORTER_OTLP_ENDPOINT }}"
+            - name: ENABLE_JUDGE
+              value: "{{ .Values.env.ENABLE_JUDGE }}"
+            - name: ENABLE_SYNTHESIS
+              value: "{{ .Values.env.ENABLE_SYNTHESIS }}"
+            - name: RATE_LIMIT_PER_MINUTE
+              value: "{{ .Values.env.RATE_LIMIT_PER_MINUTE }}"
+            - name: DOMAIN_ALIASES
+              value: "{{ .Values.env.DOMAIN_ALIASES }}"
+            - name: POLICY_BLOCKLIST
+              value: "{{ .Values.env.POLICY_BLOCKLIST }}"
+            - name: POLICY_ALLOWLIST
+              value: "{{ .Values.env.POLICY_ALLOWLIST }}"
+            - name: POLICY_SOURCE_TYPES_ALLOW
+              value: "{{ .Values.env.POLICY_SOURCE_TYPES_ALLOW }}"
+            - name: POLICY_SOURCE_TYPES_BLOCK
+              value: "{{ .Values.env.POLICY_SOURCE_TYPES_BLOCK }}"
+            - name: POLICY_DOMAINS_ALLOW
+              value: "{{ .Values.env.POLICY_DOMAINS_ALLOW }}"
+            - name: POLICY_DOMAINS_BLOCK
+              value: "{{ .Values.env.POLICY_DOMAINS_BLOCK }}"
+            - name: POLICY_RULES
+              value: "{{ .Values.env.POLICY_RULES }}"
+            - name: QDRANT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "sag-rag.fullname" . }}-config
+                  key: QDRANT_URL
+            - name: ELASTIC_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "sag-rag.fullname" . }}-config
+                  key: ELASTIC_URL
+            - name: NEO4J_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "sag-rag.fullname" . }}-config
+                  key: NEO4J_URI
+            - name: NEO4J_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "sag-rag.fullname" . }}-config
+                  key: NEO4J_USER
+            - name: NEO4J_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "sag-rag.fullname" . }}-config
+                  key: NEO4J_PASSWORD
+          resources:
+{{ toYaml .Values.resources | indent 12 }}

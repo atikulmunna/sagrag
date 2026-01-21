@@ -1,0 +1,19 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sag-rag-train-stub
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+          containers:
+            - name: trainer
+              image: sag-backend:latest
+              command: ["bash", "infra/learning/pipeline.sh"]
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: sag-rag-data

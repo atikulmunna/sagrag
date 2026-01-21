@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sag-rag
+description: SAG-RAG backend helm chart (placeholder)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

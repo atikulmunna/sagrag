@@ -1,0 +1,27 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sag-rag-training-export
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: exporter
+              image: sag-backend:latest
+              command: ["bash", "scripts/export_training_data.sh", "/data/learning/train.jsonl"]
+              env:
+                - name: MIN_RATING
+                  value: "4"
+                - name: LIMIT
+                  value: "2000"
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: sag-rag-data
