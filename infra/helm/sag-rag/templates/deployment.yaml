@@ -54,6 +54,10 @@ spec:
               value: "{{ .Values.env.ENABLE_SYNTHESIS }}"
             - name: RATE_LIMIT_PER_MINUTE
               value: "{{ .Values.env.RATE_LIMIT_PER_MINUTE }}"
+            - name: LLM_MAX_CONCURRENT
+              value: "{{ .Values.env.LLM_MAX_CONCURRENT }}"
+            - name: TENANT_ISOLATION
+              value: "{{ .Values.env.TENANT_ISOLATION }}"
             - name: DOMAIN_ALIASES
               value: "{{ .Values.env.DOMAIN_ALIASES }}"
             - name: POLICY_BLOCKLIST

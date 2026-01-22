@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     enable_judge: bool = True
     enable_synthesis: bool = True
     rate_limit_per_minute: int = 60
+    llm_max_concurrent: int = 2
+    tenant_isolation: bool = False
     learning_export_path: str = "/data/learning/train.jsonl"
     learning_min_rating: int = 4
     default_freshness_days: int | None = None

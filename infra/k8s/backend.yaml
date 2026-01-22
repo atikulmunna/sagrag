@@ -53,6 +53,16 @@ spec:
               value: "sag-rag-backend"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector:4317"
+            - name: ENABLE_JUDGE
+              value: "true"
+            - name: ENABLE_SYNTHESIS
+              value: "true"
+            - name: RATE_LIMIT_PER_MINUTE
+              value: "60"
+            - name: LLM_MAX_CONCURRENT
+              value: "2"
+            - name: TENANT_ISOLATION
+              value: "false"
             - name: DOMAIN_ALIASES
               value: "{}"
             - name: POLICY_BLOCKLIST

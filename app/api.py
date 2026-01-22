@@ -7,7 +7,7 @@ from reranker import rerank
 from judge import judge_evidence, build_graph_context, build_graph_reasoning
 from synthesis import synthesize_answer
 from config import settings
-from store import log_query_result, fetch_audit_logs, export_audit_jsonl, log_feedback
+from store import log_query_result, fetch_audit_logs, export_audit_jsonl, log_feedback, fetch_feedback
 from metrics import render_prometheus
 from continuous_learning import export_training_data, export_default_training_data
 
@@ -24,9 +24,18 @@ def _parse_blocklist(value):
 
 
 @router.post("/ingest")
-def ingest_endpoint():
+async def ingest_endpoint(request: Request):
     # NOTE: uses folder path inside container
-    res = ingest_folder("/data/docs")
+    tenant = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            tenant = body.get("tenant")
+    except Exception:
+        tenant = None
+    if settings.tenant_isolation:
+        tenant = tenant or "default"
+    res = ingest_folder("/data/docs", tenant=tenant)
     return {"status": "ok", **res}
 
 @router.post("/query")
@@ -86,7 +95,11 @@ async def query_endpoint(request: Request):
         # When domain isn't inferred, search base + fallback domains for coverage.
         fallback_domains = list({d for d in fallback_domains if d})
     queries = plan.get("queries", [query])
-    raw_results = await run_agents(queries, domain=domain, fallback_domains=fallback_domains)
+    tenant = None
+    if settings.tenant_isolation:
+        tenant = body.get("tenant") if isinstance(body, dict) else None
+        tenant = tenant or user_id
+    raw_results = await run_agents(queries, domain=domain, fallback_domains=fallback_domains, tenant=tenant)
 
     # Normalize results
     normalized = []
@@ -216,6 +229,11 @@ async def feedback_endpoint(request: Request):
     comment = body.get("comment", "")
     log_feedback(user_id=user_id, query=query, rating=rating, comment=comment)
     return {"status": "ok"}
+
+@router.get("/feedback/list")
+def feedback_list_endpoint(limit: int = 50):
+    limit = max(1, min(limit, 1000))
+    return {"results": fetch_feedback(limit=limit)}
 
 @router.post("/learning/export")
 async def learning_export_endpoint(request: Request):

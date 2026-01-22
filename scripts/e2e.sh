@@ -37,4 +37,7 @@ PY
 echo "Metrics..."
 curl -sSf http://localhost:8000/metrics >/dev/null
 
+echo "UI..."
+curl -sSf http://localhost:8000/ui >/dev/null
+
 echo "Done."

@@ -55,7 +55,7 @@ def _load_embed_model():
         _EMB_MODEL = SentenceTransformer(settings.embedding_model_name)
     return _EMB_MODEL
 
-async def vector_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None):
+async def vector_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None, tenant: str | None = None):
     start = time.monotonic()
     span = _TRACER.start_as_current_span("retriever.vector") if _TRACER else None
     if span:
@@ -68,6 +68,8 @@ async def vector_search(query_text: str, k: int = 6, timeout_s: float = 5.0, dom
         # NOTE: qdrant-client versions vary; this common call works for many.
         qdrant = _get_qdrant()
         collection = QDRANT_COLLECTION
+        if tenant:
+            collection = f"{collection}_{tenant}"
         if domain:
             collection = f"{QDRANT_COLLECTION}_{domain}"
         try:
@@ -98,7 +100,7 @@ async def vector_search(query_text: str, k: int = 6, timeout_s: float = 5.0, dom
         r["elapsed_ms"] = elapsed_ms
     return results
 
-async def lexical_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None):
+async def lexical_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None, tenant: str | None = None):
     start = time.monotonic()
     span = _TRACER.start_as_current_span("retriever.lexical") if _TRACER else None
     if span:
@@ -109,6 +111,8 @@ async def lexical_search(query_text: str, k: int = 6, timeout_s: float = 5.0, do
         body = {"query": {"match": {"text": {"query": query_text}}}, "size": k}
         es = _get_es()
         index = ELASTIC_INDEX
+        if tenant:
+            index = f"{index}_{tenant}"
         if domain:
             index = settings.domain_index_map.get(domain, f"{ELASTIC_INDEX}_{domain}")
         try:
@@ -150,7 +154,7 @@ def _extract_structured_lines(text: str, tokens: list[str], max_lines: int = 6):
             break
     return lines
 
-async def structured_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None):
+async def structured_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None, tenant: str | None = None):
     span = _TRACER.start_as_current_span("retriever.structured") if _TRACER else None
     if span:
         span.__enter__()
@@ -158,7 +162,7 @@ async def structured_search(query_text: str, k: int = 6, timeout_s: float = 5.0,
         span.set_attribute("retriever.domain", domain or "")
     try:
         tokens = [t for t in query_text.lower().split() if len(t) > 2]
-        base = await lexical_search(query_text, k=k, timeout_s=timeout_s, domain=domain)
+        base = await lexical_search(query_text, k=k, timeout_s=timeout_s, domain=domain, tenant=tenant)
         out = []
         for r in base:
             source = r.get("source") or {}
@@ -184,7 +188,7 @@ async def structured_search(query_text: str, k: int = 6, timeout_s: float = 5.0,
         if span:
             span.__exit__(None, None, None)
 
-async def run_agents(queries, domain: str | None = None, fallback_domains: list[str] | None = None):
+async def run_agents(queries, domain: str | None = None, fallback_domains: list[str] | None = None, tenant: str | None = None):
     tasks = []
     search_domains = [domain] if domain else []
     if fallback_domains:
@@ -195,9 +199,9 @@ async def run_agents(queries, domain: str | None = None, fallback_domains: list[
         search_domains = [None]
     for q in queries:
         for d in search_domains:
-            tasks.append(vector_search(q, domain=d))
-            tasks.append(lexical_search(q, domain=d))
-            tasks.append(structured_search(q, domain=d))
+            tasks.append(vector_search(q, domain=d, tenant=tenant))
+            tasks.append(lexical_search(q, domain=d, tenant=tenant))
+            tasks.append(structured_search(q, domain=d, tenant=tenant))
     res = await asyncio.gather(*tasks)
     flattened = [item for sub in res for item in sub]
     seen = set()

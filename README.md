@@ -69,6 +69,8 @@ Config (env vars)
 - `POLICY_SOURCE_TYPES_ALLOW`, `POLICY_SOURCE_TYPES_BLOCK`
 - `POLICY_DOMAINS_ALLOW`, `POLICY_DOMAINS_BLOCK`
 - `POLICY_RULES` (JSON list of rule objects with `action`, `domains`, `source_types`, `contains`, `not_contains`)
+- `TENANT_ISOLATION` (true/false)
+- `LLM_MAX_CONCURRENT` (limits concurrent LLM calls)
 
 Domain routing example
 ```
@@ -90,6 +92,16 @@ Deployment
 Continuous learning
 - Export: `bash scripts/export_training_data.sh /data/learning/train.jsonl`
 - Pipeline: `bash infra/learning/pipeline.sh` (curate, split, train stub, eval stub)
+
+Evaluation harness
+- `python scripts/eval_harness.py --base-url http://localhost:8000 --cases data/eval_cases.jsonl`
+
+Audit/feedback CLI
+- `python scripts/view_audit.py --limit 20`
+- `python scripts/view_feedback.py --limit 20`
+
+Admin UI
+- `GET /ui` (simple dashboard for recent queries and feedback)
 
 Notes on completeness
 This repo is a production-ready MVP with full pipeline wiring and scaffolding.

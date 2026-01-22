@@ -28,6 +28,7 @@ class GeminiREST:
         self.model = settings.gemini_model_name
         self.base_url = f"https://generativelanguage.googleapis.com/v1/models/{self.model}:generateContent"
         self.enabled = bool(self.api_key)
+        self._sema = asyncio.Semaphore(settings.llm_max_concurrent)
 
     async def completion(self, prompt: str, max_tokens: int = 512) -> str:
         if not self.enabled:
@@ -46,8 +47,9 @@ class GeminiREST:
         attempt = 0
         while True:
             attempt += 1
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(self.base_url, headers=headers, json=payload)
+            async with self._sema:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.post(self.base_url, headers=headers, json=payload)
             if resp.status_code == 200:
                 data = resp.json()
                 try:

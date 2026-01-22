@@ -4,6 +4,7 @@ import logging
 import time
 from fastapi import FastAPI, Request, HTTPException
 from api import router
+from ui import router as ui_router
 from metrics import record_request
 from otel import setup_tracing
 from config import settings
@@ -14,6 +15,7 @@ logger = logging.getLogger("sag_rag")
 app = FastAPI(title="SAG Backend")
 app.include_router(router, prefix="/v1")
 app.include_router(router)
+app.include_router(ui_router)
 
 setup_tracing(app)
 

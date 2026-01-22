@@ -57,7 +57,7 @@ def _flatten_csv(text: str, max_lines=500):
         lines.append(" | ".join(pairs))
     return lines
 
-def ingest_folder(folder_path: str = "/data/docs"):
+def ingest_folder(folder_path: str = "/data/docs", tenant: str | None = None):
     from sentence_transformers import SentenceTransformer
     from qdrant_client import QdrantClient
     from elasticsearch import Elasticsearch
@@ -102,6 +102,9 @@ def ingest_folder(folder_path: str = "/data/docs"):
             domain = None
         collection = base_collection
         index = base_index
+        if tenant:
+            collection = f"{collection}_{tenant}"
+            index = f"{index}_{tenant}"
         if domain:
             collection = f"{base_collection}_{domain}"
             index = f"{base_index}_{domain}"
