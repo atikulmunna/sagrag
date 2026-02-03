@@ -2,15 +2,17 @@
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    # Gemini / Google generative settings (for generation only)
-    gemini_api_key: str | None = None
-    gemini_model_name: str = "gemini-1.5-flash"
+    # Ollama settings (generation only)
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1"
     # local embedding model name (sentence-transformers)
     embedding_model_name: str = "all-MiniLM-L6-v2"
     reranker_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     reranker_top_k: int = 10
     judge_timeout_s: float = 8.0
     synthesis_timeout_s: float = 12.0
+    judge_max_tokens: int = 150
+    synthesis_max_tokens: int = 250
     max_evidence_snippets: int = 8
 
     # Service URLs (Docker service hostnames)

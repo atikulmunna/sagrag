@@ -42,8 +42,11 @@ services:
     volumes:
       - ../app:/app
       - ../data:/data
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - qdrant
       - elastic

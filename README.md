@@ -1,12 +1,11 @@
 # SAG-RAG Backend
 
 Speculative -> Agentic -> Graph RAG backend with FastAPI, Qdrant, Elasticsearch, and Neo4j.
-This repo implements the full SAG-RAG pipeline plus production scaffolding (observability, k8s/Helm, CI).
+This repo implements the full SAG-RAG pipeline and a local Docker Compose stack.
 
 What we built
 - End-to-end SAG-RAG pipeline: speculative planning, multi-agent retrieval, re-ranking, graph reasoning, judge, and synthesis with provenance.
-- Production scaffolding: Docker, Helm, k8s manifests, CI workflows, and observability stack configs.
-- Continuous learning pipeline scaffold: feedback capture, exports, curation, split, and training/eval stubs.
+- Local deployment: Docker Compose for the full stack.
 
 What is special / novel
 - Speculative query planning to generate targeted sub-queries before retrieval.
@@ -22,8 +21,7 @@ Key features
 - Graph reasoning output with evidence scores and path signals.
 - Judge step with contradiction penalties and relation boosts.
 - Synthesis with provenance (offsets), confidence, and explain trace.
-- Feedback endpoint and continuous learning export pipeline.
-- Metrics, alerts, and tracing scaffolding.
+- Feedback endpoint and audit logging.
 
 Tools and techniques used
 - FastAPI for API layer.
@@ -32,8 +30,8 @@ Tools and techniques used
 - Neo4j for knowledge graph storage and traversal.
 - SentenceTransformers for embeddings and re-ranking.
 - spaCy for NER and relation extraction.
-- OpenTelemetry stubs for tracing; Prometheus/Grafana for metrics.
-- Docker, Helm, and Kubernetes manifests for deployment.
+- Ollama for local LLM generation.
+- Docker Compose for deployment.
 
 Architecture (high level)
 1) Client sends query to FastAPI.
@@ -44,7 +42,7 @@ Architecture (high level)
 6) Graph reasoning produces evidence scores and contradiction signals.
 7) Judge validates evidence and sets confidence.
 8) Synthesis generates final answer with provenance.
-9) Feedback and audit logs stored for learning.
+9) Feedback and audit logs stored for analysis.
 
 Total workflow (query path)
 Request -> plan -> retrieve -> dedupe -> rerank -> graph context -> judge -> synthesis -> response.
@@ -59,7 +57,7 @@ Local env
 - Copy `.env.example` to `.env` and fill in values.
 
 Config (env vars)
-- `GEMINI_API_KEY` (required for planner/judge/synthesis)
+- `OLLAMA_URL`, `OLLAMA_MODEL`
 - `QDRANT_URL`, `ELASTIC_URL`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`
 - `GRAPH_ENABLED` (true/false)
 - `DOMAIN_KEYWORDS` (JSON dict of domain -> keyword list)
@@ -78,27 +76,8 @@ DOMAIN_KEYWORDS='{"stoicism":["stoic","seneca","epictetus","marcus"],"finance":[
 DOMAIN_MIN_KEYWORD_HITS=2
 ```
 
-Observability
-- Metrics: `GET /metrics` (Prometheus format)
-- Grafana dashboard stub: `infra/observability/grafana-dashboard.json`
-- Tracing: set `OTEL_ENABLED=true` and `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317`
-- Local stack: `docker compose -f infra/observability/docker-compose.yml up -d`
-
 Deployment
-- Helm chart: `infra/helm/sag-rag`
-- k8s manifest: `infra/k8s/backend.yaml`
-- Learning CronJob: `infra/learning/cron.yaml`
-
-Continuous learning
-- Export: `bash scripts/export_training_data.sh /data/learning/train.jsonl`
-- Pipeline: `bash infra/learning/pipeline.sh` (curate, split, train stub, eval stub)
-
-Evaluation harness
-- `python scripts/eval_harness.py --base-url http://localhost:8000 --cases data/eval_cases.jsonl`
-
-Audit/feedback CLI
-- `python scripts/view_audit.py --limit 20`
-- `python scripts/view_feedback.py --limit 20`
+- Docker Compose: `infra/docker-compose.yml`
 
 Admin UI
 - `GET /ui` (simple dashboard for recent queries and feedback)

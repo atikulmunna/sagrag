@@ -62,7 +62,10 @@ Evidence snippets:
 {evidence_snippets}
 """
     try:
-        out = await asyncio.wait_for(llm.completion(prompt, max_tokens=500), timeout=settings.synthesis_timeout_s)
+        out = await asyncio.wait_for(
+            llm.completion(prompt, max_tokens=settings.synthesis_max_tokens),
+            timeout=settings.synthesis_timeout_s,
+        )
         parsed = _safe_json_extract(out)
         if parsed and parsed.get("answer"):
             prov = parsed.get("provenance") if isinstance(parsed, dict) else None
@@ -102,6 +105,31 @@ Evidence snippets:
                     if p.get("offset_start") is not None and p.get("offset_end") is not None and p.get("source")
                 ]
             return parsed
+        # Non-JSON fallback: use raw text as answer with best-effort provenance.
+        trusted = []
+        if isinstance(judge_output, dict):
+            trusted = judge_output.get("trusted_ids") or []
+        by_id = {e.get("id"): e for e in evidence}
+        picks = [by_id[t] for t in trusted if t in by_id]
+        if not picks:
+            picks = evidence[:3]
+        provenance = [
+            {
+                "id": p.get("id"),
+                "source": p.get("source"),
+                "offset_start": p.get("offset_start"),
+                "offset_end": p.get("offset_end"),
+            }
+            for p in picks
+            if p.get("offset_start") is not None and p.get("offset_end") is not None and p.get("source")
+        ]
+        if out and out.strip():
+            return {
+                "answer": out.strip(),
+                "provenance": provenance,
+                "confidence": judge_output.get("confidence", 0.3) if isinstance(judge_output, dict) else 0.3,
+                "explain_trace": "synthesis_non_json",
+            }
     except Exception:
         pass
     fallback = {
@@ -127,4 +155,13 @@ Evidence snippets:
         for p in picks
         if p.get("offset_start") is not None and p.get("offset_end") is not None and p.get("source")
     ]
+    if not fallback["answer"]:
+        snippets = []
+        for p in picks[:2]:
+            text = (p.get("text") or "").strip()
+            if text:
+                snippets.append(text[:280])
+        if snippets:
+            fallback["answer"] = "Based on the available evidence: " + " ".join(snippets)
+            fallback["explain_trace"] = "synthesis_extractive_fallback"
     return fallback

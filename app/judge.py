@@ -45,7 +45,10 @@ Evidence snippets:
 {evidence_snippets}
 """
     try:
-        out = await asyncio.wait_for(llm.completion(prompt, max_tokens=300), timeout=settings.judge_timeout_s)
+        out = await asyncio.wait_for(
+            llm.completion(prompt, max_tokens=settings.judge_max_tokens),
+            timeout=settings.judge_timeout_s,
+        )
         parsed = _safe_json_extract(out)
         if parsed:
             # Apply structured contradiction signals when available.
@@ -56,8 +59,27 @@ Evidence snippets:
             parsed = apply_relation_conflict_penalty(parsed, graph_reasoning)
             parsed = apply_relation_boost(parsed, graph_reasoning, len(contradicted))
             return parsed
+        # Non-JSON fallback: trust top evidence ids so synthesis can proceed.
+        trusted_ids = [e.get("id") for e in evidence[:3] if e.get("id")]
+        fallback = {"confidence": 0.4, "trusted_ids": trusted_ids, "notes": "judge_non_json"}
+        contradicted = extract_contradictions(graph_reasoning)
+        if contradicted:
+            fallback["contradictions"] = contradicted
+            fallback = apply_contradiction_penalty(fallback, len(contradicted))
+        fallback = apply_relation_conflict_penalty(fallback, graph_reasoning)
+        fallback = apply_relation_boost(fallback, graph_reasoning, len(contradicted))
+        return fallback
     except Exception:
-        pass
+        # Fall back to trusting top evidence when judge fails (timeout/provider errors).
+        trusted_ids = [e.get("id") for e in evidence[:3] if e.get("id")]
+        fallback = {"confidence": 0.3, "trusted_ids": trusted_ids, "notes": "judge_error_fallback"}
+        contradicted = extract_contradictions(graph_reasoning)
+        if contradicted:
+            fallback["contradictions"] = contradicted
+            fallback = apply_contradiction_penalty(fallback, len(contradicted))
+        fallback = apply_relation_conflict_penalty(fallback, graph_reasoning)
+        fallback = apply_relation_boost(fallback, graph_reasoning, len(contradicted))
+        return fallback
     fallback = {"confidence": 0.3, "trusted_ids": [], "notes": "judge_unavailable"}
     contradicted = extract_contradictions(graph_reasoning)
     if contradicted:

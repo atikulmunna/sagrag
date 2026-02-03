@@ -174,7 +174,7 @@ async def query_endpoint(request: Request):
     synthesis = {"answer": "", "provenance": [], "confidence": judge_output.get("confidence", 0.3), "explain_trace": "synthesis_disabled"}
     if settings.enable_synthesis:
         synthesis = await synthesize_answer(query, reranked, judge_output)
-        if not synthesis.get("answer"):
+        if not synthesis.get("answer") and synthesis.get("explain_trace") == "synthesis_unavailable":
             synthesis["answer"] = "I could not synthesize a confident answer from the available evidence."
 
     response = {

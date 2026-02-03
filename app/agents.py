@@ -1,6 +1,7 @@
 # app/agents.py
 import asyncio
 import time
+import contextlib
 from config import settings
 try:
     from opentelemetry import trace
@@ -57,11 +58,7 @@ def _load_embed_model():
 
 async def vector_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None, tenant: str | None = None):
     start = time.monotonic()
-    span = _TRACER.start_as_current_span("retriever.vector") if _TRACER else None
-    if span:
-        span.__enter__()
-        span.set_attribute("retriever.k", k)
-        span.set_attribute("retriever.domain", domain or "")
+    span_cm = _TRACER.start_as_current_span("retriever.vector") if _TRACER else contextlib.nullcontext()
     def _sync_search():
         model = _load_embed_model()
         q_emb = model.encode([query_text])[0].tolist()
@@ -87,13 +84,14 @@ async def vector_search(query_text: str, k: int = 6, timeout_s: float = 5.0, dom
                 continue
             results.append({"id": rid, "score": score, "payload": payload})
         return results
-    try:
-        results = await asyncio.wait_for(asyncio.to_thread(_sync_search), timeout=timeout_s)
-    except Exception:
-        return []
-    finally:
+    with span_cm as span:
         if span:
-            span.__exit__(None, None, None)
+            span.set_attribute("retriever.k", k)
+            span.set_attribute("retriever.domain", domain or "")
+        try:
+            results = await asyncio.wait_for(asyncio.to_thread(_sync_search), timeout=timeout_s)
+        except Exception:
+            return []
     elapsed_ms = int((time.monotonic() - start) * 1000)
     for r in results:
         r["agent"] = "vector"
@@ -102,11 +100,7 @@ async def vector_search(query_text: str, k: int = 6, timeout_s: float = 5.0, dom
 
 async def lexical_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None, tenant: str | None = None):
     start = time.monotonic()
-    span = _TRACER.start_as_current_span("retriever.lexical") if _TRACER else None
-    if span:
-        span.__enter__()
-        span.set_attribute("retriever.k", k)
-        span.set_attribute("retriever.domain", domain or "")
+    span_cm = _TRACER.start_as_current_span("retriever.lexical") if _TRACER else contextlib.nullcontext()
     def _sync_search():
         body = {"query": {"match": {"text": {"query": query_text}}}, "size": k}
         es = _get_es()
@@ -121,13 +115,14 @@ async def lexical_search(query_text: str, k: int = 6, timeout_s: float = 5.0, do
             resp = es.search(index=ELASTIC_INDEX, body=body)
         hits = resp["hits"]["hits"]
         return [{"id": h["_id"], "score": float(h["_score"]), "source": h["_source"]} for h in hits]
-    try:
-        results = await asyncio.wait_for(asyncio.to_thread(_sync_search), timeout=timeout_s)
-    except Exception:
-        return []
-    finally:
+    with span_cm as span:
         if span:
-            span.__exit__(None, None, None)
+            span.set_attribute("retriever.k", k)
+            span.set_attribute("retriever.domain", domain or "")
+        try:
+            results = await asyncio.wait_for(asyncio.to_thread(_sync_search), timeout=timeout_s)
+        except Exception:
+            return []
     elapsed_ms = int((time.monotonic() - start) * 1000)
     for r in results:
         r["agent"] = "lexical"
@@ -155,12 +150,13 @@ def _extract_structured_lines(text: str, tokens: list[str], max_lines: int = 6):
     return lines
 
 async def structured_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None, tenant: str | None = None):
-    span = _TRACER.start_as_current_span("retriever.structured") if _TRACER else None
-    if span:
-        span.__enter__()
-        span.set_attribute("retriever.k", k)
-        span.set_attribute("retriever.domain", domain or "")
-    try:
+    span_cm = _TRACER.start_as_current_span("retriever.structured") if _TRACER else contextlib.nullcontext()
+    with span_cm as span:
+        if span:
+            span.set_attribute("retriever.k", k)
+            span.set_attribute("retriever.domain", domain or "")
+        if not isinstance(query_text, str):
+            query_text = str(query_text)
         tokens = [t for t in query_text.lower().split() if len(t) > 2]
         base = await lexical_search(query_text, k=k, timeout_s=timeout_s, domain=domain, tenant=tenant)
         out = []
@@ -178,15 +174,14 @@ async def structured_search(query_text: str, k: int = 6, timeout_s: float = 5.0,
                         "source_type": source.get("source_type"),
                         "domain": source.get("domain"),
                     },
+                    "offset_start": r.get("offset_start"),
+                    "offset_end": r.get("offset_end"),
                     "agent": "structured",
                     "elapsed_ms": r.get("elapsed_ms"),
                 })
                 if len(out) >= k:
                     return out
         return out
-    finally:
-        if span:
-            span.__exit__(None, None, None)
 
 async def run_agents(queries, domain: str | None = None, fallback_domains: list[str] | None = None, tenant: str | None = None):
     tasks = []

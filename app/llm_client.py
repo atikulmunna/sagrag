@@ -1,7 +1,7 @@
 # app/llm_client.py
-import json
 import asyncio
 import random
+import contextlib
 from typing import List
 import httpx
 
@@ -21,60 +21,48 @@ def _load_embed_model():
         _EMBED_MODEL = SentenceTransformer(settings.embedding_model_name)
     return _EMBED_MODEL
 
-class GeminiREST:
-    """Minimal Gemini REST wrapper for text generation (generateContent endpoint)."""
+class OllamaREST:
+    """Minimal Ollama REST wrapper (generate endpoint)."""
     def __init__(self):
-        self.api_key = settings.gemini_api_key
-        self.model = settings.gemini_model_name
-        self.base_url = f"https://generativelanguage.googleapis.com/v1/models/{self.model}:generateContent"
-        self.enabled = bool(self.api_key)
+        self.base_url = settings.ollama_url.rstrip("/")
+        self.model = settings.ollama_model
         self._sema = asyncio.Semaphore(settings.llm_max_concurrent)
 
     async def completion(self, prompt: str, max_tokens: int = 512) -> str:
-        if not self.enabled:
-            raise RuntimeError("Gemini API key not configured. Set GEMINI_API_KEY in .env.")
-        span = _TRACER.start_as_current_span("llm.completion") if _TRACER else None
-        if span:
-            span.__enter__()
-            span.set_attribute("llm.model", self.model)
-            span.set_attribute("llm.max_tokens", max_tokens)
-        try:
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens}
-        }
-        headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
-        attempt = 0
-        while True:
-            attempt += 1
-            async with self._sema:
-                async with httpx.AsyncClient(timeout=60) as client:
-                    resp = await client.post(self.base_url, headers=headers, json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                try:
-                    if span:
-                        span.set_attribute("http.status_code", resp.status_code)
-                    return data["candidates"][0]["content"]["parts"][0]["text"]
-                except Exception:
-                    if span:
-                        span.set_attribute("http.status_code", resp.status_code)
-                    return json.dumps(data, indent=2)
-            if attempt >= settings.llm_max_retries:
-                if span:
-                    span.set_attribute("http.status_code", resp.status_code)
-                raise RuntimeError(f"Gemini API error: {resp.status_code} {resp.text}")
-            backoff = settings.llm_retry_base_s * (2 ** (attempt - 1))
-            backoff = backoff + random.uniform(0, 0.25)
-            await asyncio.sleep(backoff)
-        finally:
+        span_cm = _TRACER.start_as_current_span("llm.completion") if _TRACER else contextlib.nullcontext()
+        with span_cm as span:
             if span:
-                span.__exit__(None, None, None)
+                span.set_attribute("llm.model", self.model)
+                span.set_attribute("llm.max_tokens", max_tokens)
+                span.set_attribute("llm.provider", "ollama")
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"num_predict": max_tokens}
+            }
+            attempt = 0
+            while True:
+                attempt += 1
+                async with self._sema:
+                    async with httpx.AsyncClient(timeout=60) as client:
+                        resp = await client.post(f"{self.base_url}/api/generate", json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    text = data.get("response", "")
+                    return text
+                if attempt >= settings.llm_max_retries:
+                    if span:
+                        span.set_attribute("http.status_code", resp.status_code)
+                    raise RuntimeError(f"Ollama error: {resp.status_code} {resp.text}")
+                backoff = settings.llm_retry_base_s * (2 ** (attempt - 1))
+                backoff = backoff + random.uniform(0, 0.25)
+                await asyncio.sleep(backoff)
 
 class LLMClient:
-    """Facade: generation (Gemini REST) + local embeddings (SentenceTransformer)."""
+    """Facade: generation (Ollama REST) + local embeddings (SentenceTransformer)."""
     def __init__(self):
-        self.gen = GeminiREST()
+        self.gen = OllamaREST()
         self._embed_model = None
 
     # GENERATION

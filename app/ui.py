@@ -1,9 +1,10 @@
 from fastapi import APIRouter
+from fastapi.responses import HTMLResponse
 from store import fetch_audit_logs, fetch_feedback
 
 router = APIRouter()
 
-@router.get("/ui")
+@router.get("/ui", response_class=HTMLResponse)
 def ui_page():
     html = """
 <!doctype html>
@@ -55,4 +56,4 @@ def ui_page():
   </body>
 </html>
 """
-    return html
+    return HTMLResponse(content=html)
