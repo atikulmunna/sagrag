@@ -1,8 +1,9 @@
 # app/api.py
 from fastapi import APIRouter, Request, HTTPException, Response
+import re
 from ingestion import ingest_folder
 from speculative import plan_query
-from agents import run_agents, route_domain, apply_policy_filter, apply_freshness_filter, apply_policy_rules
+from agents import run_agents, route_domain, apply_policy_filter, apply_freshness_filter, apply_policy_rules, author_lexical_search
 from reranker import rerank
 from judge import judge_evidence, build_graph_context, build_graph_reasoning
 from synthesis import synthesize_answer
@@ -22,6 +23,99 @@ def _parse_blocklist(value):
         return [v.strip().lower() for v in value.split(",") if v.strip()]
     return []
 
+_AUTHOR_STOPWORDS = {
+    "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with",
+    "what", "why", "how", "who", "where", "when", "which", "whom", "whose",
+    "stoic", "stoics", "stoicism", "philosophy", "philosopher", "guidance",
+    "ethics", "roman", "advice",
+}
+_QUERY_STOPWORDS = {
+    "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with",
+    "what", "why", "how", "who", "where", "when", "which", "whom", "whose",
+    "does", "say", "about", "handle",
+}
+_TERM_SYNONYMS = {
+    "fear": ["fear", "fears", "afraid", "anxiety", "anxious", "terror", "dread", "timor", "metus"],
+    "death": ["death", "die", "dying", "mortality", "mors"],
+}
+
+def _extract_author_mentions(query: str) -> list[str]:
+    if not query:
+        return []
+    q = query.lower()
+    terms = set()
+    for keywords in (settings.domain_keywords or {}).values():
+        for kw in keywords:
+            kw_l = str(kw).strip().lower()
+            if not kw_l or len(kw_l) < 3 or kw_l in _AUTHOR_STOPWORDS:
+                continue
+            if kw_l in q:
+                terms.add(kw_l)
+    for token in re.findall(r"[A-Za-z][A-Za-z\\-]+", query):
+        if token[0].isupper():
+            t = token.lower()
+            if len(t) >= 3 and t not in _AUTHOR_STOPWORDS:
+                terms.add(t)
+    return sorted(terms)
+
+def _extract_query_terms(query: str, author_terms: list[str]) -> list[str]:
+    if not query:
+        return []
+    terms = []
+    author_set = {t.lower() for t in author_terms}
+    for token in re.findall(r"[A-Za-z][A-Za-z\\-]+", query):
+        t = token.lower()
+        if len(t) < 3:
+            continue
+        if t in _QUERY_STOPWORDS or t in author_set:
+            continue
+        terms.append(t)
+    # expand with simple synonyms
+    expanded = []
+    for t in terms:
+        expanded.append(t)
+        if t in _TERM_SYNONYMS:
+            expanded.extend(_TERM_SYNONYMS[t])
+    # keep stable order, remove dups
+    seen = set()
+    out = []
+    for t in expanded:
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+def _apply_author_bias(results, query: str, bias: float = 0.8):
+    terms = _extract_author_mentions(query)
+    if not terms:
+        return results, terms
+    out = []
+    for r in results:
+        source = (r.get("source") or "").lower()
+        text = (r.get("text") or "").lower()
+        file_hit = any(t in source for t in terms)
+        text_hit = any(t in text for t in terms)
+        match = file_hit or text_hit
+        r2 = dict(r)
+        if file_hit:
+            r2["author_bias"] = bias
+        elif text_hit:
+            r2["author_bias"] = bias * 0.5
+        else:
+            r2["author_bias"] = 0.0
+        out.append(r2)
+    return out, terms
+
+def _author_matches(result: dict, author_terms: list[str]) -> bool:
+    if not author_terms:
+        return False
+    source = (result.get("source") or "").lower()
+    text = (result.get("text") or "").lower()
+    for t in author_terms:
+        if t in source or t in text:
+            return True
+    return False
 
 @router.post("/ingest")
 async def ingest_endpoint(request: Request):
@@ -145,7 +239,86 @@ async def query_endpoint(request: Request):
         seen.add(fp)
         deduped.append(r)
 
+    deduped, author_terms = _apply_author_bias(deduped, query)
+    if author_terms:
+        query_terms = _extract_query_terms(query, author_terms)
+        author_queries = [query]
+        if query_terms:
+            for t in author_terms:
+                author_queries.append(f"{t} {' '.join(query_terms)}")
+        author_hits = []
+        for q in author_queries:
+            author_hits += await author_lexical_search(
+                q,
+                author_terms,
+                required_terms=query_terms,
+                k=24,
+                domain=domain,
+                tenant=tenant,
+            )
+        for r in author_hits:
+            payload = r.get("payload") or {}
+            source = r.get("source") or {}
+            text = payload.get("text") or source.get("text") or ""
+            if not text:
+                continue
+            deduped.append({
+                "id": r.get("id"),
+                "text": text,
+                "source": payload.get("source") or source.get("source"),
+                "timestamp": payload.get("timestamp") or source.get("timestamp"),
+                "offset_start": payload.get("offset_start") or source.get("offset_start"),
+                "offset_end": payload.get("offset_end") or source.get("offset_end"),
+                "source_type": (payload.get("source_type") or source.get("source_type") or "").lower(),
+                "domain": (payload.get("domain") or source.get("domain") or "").lower(),
+                "score": r.get("score"),
+                "agent": r.get("agent"),
+                "elapsed_ms": r.get("elapsed_ms"),
+                "author_bias": 0.8,
+            })
+        # re-dedupe after author-guided expansion
+        seen = set()
+        tmp = []
+        for r in deduped:
+            fp = " ".join(r["text"].lower().split())
+            if fp in seen:
+                continue
+            seen.add(fp)
+            tmp.append(r)
+        deduped = tmp
     reranked = await rerank(query, deduped)
+    author_gap = False
+    if author_terms:
+        for r in reranked:
+            base = r.get("rerank_score")
+            if base is None:
+                base = r.get("score") or 0.0
+            r["rerank_score"] = float(base) + float(r.get("author_bias") or 0.0)
+        reranked.sort(key=lambda x: x.get("rerank_score", 0.0), reverse=True)
+        query_terms = _extract_query_terms(query, author_terms)
+        author_hits = [r for r in reranked if _author_matches(r, author_terms)]
+        if author_hits:
+            # Soft-hard: prefer author-only set when author is explicit.
+            if query_terms:
+                filtered = []
+                for r in author_hits:
+                    text_l = (r.get("text") or "").lower()
+                    if any(t in text_l for t in query_terms):
+                        filtered.append(r)
+                if filtered:
+                    author_hits = filtered
+                    reranked = author_hits
+                else:
+                    # No author passages mention the query terms; allow fallback.
+                    author_gap = True
+                    # Remove author bias so non-author relevance can surface.
+                    for r in reranked:
+                        rb = float(r.get("rerank_score") or 0.0)
+                        rb -= float(r.get("author_bias") or 0.0)
+                        r["rerank_score"] = rb
+                    reranked.sort(key=lambda x: x.get("rerank_score", 0.0), reverse=True)
+            else:
+                reranked = author_hits
 
     graph_signals = []
     graph_subgraph = None
@@ -173,15 +346,22 @@ async def query_endpoint(request: Request):
 
     synthesis = {"answer": "", "provenance": [], "confidence": judge_output.get("confidence", 0.3), "explain_trace": "synthesis_disabled"}
     if settings.enable_synthesis:
-        synthesis = await synthesize_answer(query, reranked, judge_output)
+        synthesis = await synthesize_answer(query, reranked, judge_output, author_terms, author_gap)
         if not synthesis.get("answer") and synthesis.get("explain_trace") == "synthesis_unavailable":
             synthesis["answer"] = "I could not synthesize a confident answer from the available evidence."
+
+    if author_gap and author_terms:
+        non_author = [r for r in reranked if not _author_matches(r, author_terms)]
+        if non_author:
+            reranked = non_author
 
     response = {
         "user_id": user_id,
         "query": query,
         "domain": domain,
         "domain_source": domain_source,
+        "author_terms": author_terms,
+        "author_gap": author_gap,
         "intent": plan.get("intent"),
         "plan": plan,
         "results": reranked,

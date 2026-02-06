@@ -129,6 +129,80 @@ async def lexical_search(query_text: str, k: int = 6, timeout_s: float = 5.0, do
         r["elapsed_ms"] = elapsed_ms
     return results
 
+async def author_lexical_search(
+    query_text: str,
+    author_terms: list[str],
+    required_terms: list[str] | None = None,
+    k: int = 6,
+    timeout_s: float = 5.0,
+    domain: str | None = None,
+    tenant: str | None = None,
+):
+    if not author_terms:
+        return []
+    span_cm = _TRACER.start_as_current_span("retriever.lexical.author") if _TRACER else contextlib.nullcontext()
+    def _sync_search():
+        # Match author terms against source.keyword with a wildcard so
+        # "seneca" finds "seneca_letters.txt".
+        author_filters = [{"wildcard": {"source.keyword": f"*{t}*"}} for t in author_terms]
+        def _body(must_terms: bool):
+            must_clauses = []
+            if must_terms and required_terms:
+                must_clauses.append({
+                    "simple_query_string": {
+                        "query": " ".join(required_terms),
+                        "fields": ["text"],
+                        "default_operator": "or",
+                    }
+                })
+            return {
+                "query": {
+                    "bool": {
+                        "filter": [{
+                            "bool": {
+                                "should": author_filters,
+                                "minimum_should_match": 1,
+                            }
+                        }],
+                        "must": must_clauses,
+                        "should": [{"match": {"text": {"query": query_text}}}],
+                    }
+                },
+                "size": k,
+            }
+        es = _get_es()
+        index = ELASTIC_INDEX
+        if tenant:
+            index = f"{index}_{tenant}"
+        if domain:
+            index = settings.domain_index_map.get(domain, f"{ELASTIC_INDEX}_{domain}")
+        try:
+            body = _body(must_terms=True)
+            resp = es.search(index=index, body=body)
+        except Exception:
+            body = _body(must_terms=True)
+            resp = es.search(index=ELASTIC_INDEX, body=body)
+        hits = resp["hits"]["hits"]
+        if required_terms and not hits:
+            # Fallback: relax term requirement if it yields zero results.
+            try:
+                resp = es.search(index=index, body=_body(must_terms=False))
+            except Exception:
+                resp = es.search(index=ELASTIC_INDEX, body=_body(must_terms=False))
+            hits = resp["hits"]["hits"]
+        return [{"id": h["_id"], "score": float(h["_score"]), "source": h["_source"]} for h in hits]
+    with span_cm as span:
+        if span:
+            span.set_attribute("retriever.k", k)
+            span.set_attribute("retriever.domain", domain or "")
+        try:
+            results = await asyncio.wait_for(asyncio.to_thread(_sync_search), timeout=timeout_s)
+        except Exception:
+            return []
+    for r in results:
+        r["agent"] = "lexical_author"
+    return results
+
 def _extract_structured_lines(text: str, tokens: list[str], max_lines: int = 6):
     lines = []
     for line in text.splitlines():

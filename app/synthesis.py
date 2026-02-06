@@ -14,7 +14,7 @@ def _safe_json_extract(text: str):
         pass
     return None
 
-async def synthesize_answer(query, evidence, judge_output):
+async def synthesize_answer(query, evidence, judge_output, author_terms=None, author_gap=False):
     evidence_snippets = []
     for e in evidence[: settings.max_evidence_snippets]:
         snippet = e.get("text", "")[:500]
@@ -36,18 +36,26 @@ async def synthesize_answer(query, evidence, judge_output):
                 graph_relations = rel.get("relations")
             if rel.get("evidence_scores"):
                 evidence_scores = rel.get("evidence_scores")
+    author_hint = ""
+    if author_terms:
+        author_hint = f"\nAuthor focus: {author_terms}\n"
+        if author_gap:
+            author_hint += "Note: No author passages explicitly mention the query keywords; use other sources and say so briefly. Do not quote unrelated author passages.\n"
     prompt = f"""
 You are a synthesis model. Return JSON only:
 {{"answer": "...", "provenance": [...], "confidence": 0.0-1.0, "explain_trace": "..."}}
 Each provenance item must include id, source, offset_start, and offset_end.
 
 Grounding rules:
+- Answer directly in 2-4 sentences.
+- If the query names an author, prioritize evidence from that author. If none exists, say so briefly.
 - Prefer claims supported by graph relations and evidence snippets.
 - If relations contradict, mention the conflict and lower confidence.
 - Do not invent relations; cite only those provided.
 
 User query:
 {query}
+{author_hint}
 
 Judge output:
 {judge_output}
@@ -113,6 +121,14 @@ Evidence snippets:
         picks = [by_id[t] for t in trusted if t in by_id]
         if not picks:
             picks = evidence[:3]
+        if author_terms and author_gap:
+            def _is_author(e):
+                s = (e.get("source") or "").lower()
+                t = (e.get("text") or "").lower()
+                return any(a in s or a in t for a in author_terms)
+            non_author = [e for e in picks if not _is_author(e)]
+            if non_author:
+                picks = non_author
         provenance = [
             {
                 "id": p.get("id"),
@@ -145,6 +161,14 @@ Evidence snippets:
     picks = [by_id[t] for t in trusted if t in by_id]
     if not picks:
         picks = evidence[:3]
+    if author_terms and author_gap:
+        def _is_author(e):
+            s = (e.get("source") or "").lower()
+            t = (e.get("text") or "").lower()
+            return any(a in s or a in t for a in author_terms)
+        non_author = [e for e in picks if not _is_author(e)]
+        if non_author:
+            picks = non_author
     fallback["provenance"] = [
         {
             "id": p.get("id"),
@@ -162,6 +186,10 @@ Evidence snippets:
             if text:
                 snippets.append(text[:280])
         if snippets:
-            fallback["answer"] = "Based on the available evidence: " + " ".join(snippets)
+            if author_terms and author_gap:
+                prefix = f"No direct passages from {', '.join(author_terms)} mention the query keywords in the current dataset. "
+                fallback["answer"] = prefix + "Other Stoic sources emphasize focusing on what is in your control, not external threats."
+            else:
+                fallback["answer"] = "Based on the available evidence: " + " ".join(snippets)
             fallback["explain_trace"] = "synthesis_extractive_fallback"
     return fallback

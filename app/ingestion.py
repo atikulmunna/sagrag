@@ -74,10 +74,26 @@ def ingest_folder(folder_path: str = "/data/docs", tenant: str | None = None):
         if name in created:
             return
         try:
-            qdrant.create_collection(collection_name=name, vectors={"size": EMB_DIM, "distance": "Cos"})
+            # Use explicit Distance enum to avoid invalid distance strings.
+            from qdrant_client.http import models as qdrant_models
+            qdrant.create_collection(
+                collection_name=name,
+                vectors_config=qdrant_models.VectorParams(
+                    size=EMB_DIM,
+                    distance=qdrant_models.Distance.COSINE,
+                ),
+            )
+            created.add(name)
+            return
+        except Exception as e:
+            # Creation can fail if it already exists or if config is invalid.
+            print(f"qdrant create_collection failed for {name}: {e}")
+        # If create failed, check whether the collection exists before caching.
+        try:
+            qdrant.get_collection(collection_name=name)
+            created.add(name)
         except Exception:
             pass
-        created.add(name)
 
     def _ensure_index(name):
         try:
@@ -144,7 +160,16 @@ def ingest_folder(folder_path: str = "/data/docs", tenant: str | None = None):
             try:
                 qdrant.upsert(collection_name=collection, points=[point])
             except Exception as e:
-                print(f"qdrant upsert failed for {point['id']}: {e}")
+                # If collection is missing, create and retry once.
+                msg = str(e)
+                if "Collection" in msg and "doesn't exist" in msg:
+                    try:
+                        _ensure_collection(collection)
+                        qdrant.upsert(collection_name=collection, points=[point])
+                    except Exception as e2:
+                        print(f"qdrant upsert failed for {point['id']}: {e2}")
+                else:
+                    print(f"qdrant upsert failed for {point['id']}: {e}")
             try:
                 es.index(
                     index=index,
