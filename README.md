@@ -91,6 +91,20 @@ Example synonym config
 QUERY_TERM_SYNONYMS={"fear":["dread","terror","anxiety","timor","metus"]}
 ```
 
+Failure analysis (current)
+- Retrieval failure tags: `no_results`, `author_gap`, `low_result_count`, `low_top_score`.
+- Hallucination risk metric exposed in `/metrics`.
+
+Ablation helper
+- Use `tools/ablation_eval.py` with multiple base URLs (different env configs) to compare outputs.
+Example:
+```
+python tools/ablation_eval.py \
+  --base-urls http://localhost:8000,http://localhost:8001 \
+  --queries data/ablation_queries.txt \
+  --output ablation_results.jsonl
+```
+
 Deployment
 - Docker Compose: `infra/docker-compose.yml`
 

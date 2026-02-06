@@ -7,6 +7,9 @@ _request_latency_buckets = [50, 100, 250, 500, 1000, 2000, 5000]
 _request_latency_counts = {}
 _author_gap_count = {}
 _author_query_count = {}
+_retrieval_failure_count = {}
+_hallucination_risk_buckets = [0.2, 0.4, 0.6, 0.8, 1.0]
+_hallucination_risk_counts = {}
 
 def _key(method: str, path: str, status: int):
     return f"{method}|{path}|{status}"
@@ -40,6 +43,31 @@ def record_author_gap(author_terms):
         return
     with _lock:
         _author_gap_count[key] = _author_gap_count.get(key, 0) + 1
+
+def record_retrieval_failure(tag: str):
+    if not tag:
+        return
+    key = str(tag).strip().lower()
+    if not key:
+        return
+    with _lock:
+        _retrieval_failure_count[key] = _retrieval_failure_count.get(key, 0) + 1
+
+def record_hallucination_risk(risk: float):
+    try:
+        r = float(risk)
+    except Exception:
+        return
+    if r < 0:
+        r = 0.0
+    if r > 1:
+        r = 1.0
+    with _lock:
+        for b in _hallucination_risk_buckets:
+            if r <= b:
+                key = f"{b:.1f}"
+                _hallucination_risk_counts[key] = _hallucination_risk_counts.get(key, 0) + 1
+        _hallucination_risk_counts["+Inf"] = _hallucination_risk_counts.get("+Inf", 0) + 1
 
 def render_prometheus():
     lines = []
@@ -77,4 +105,14 @@ def render_prometheus():
     with _lock:
         for key, count in _author_gap_count.items():
             lines.append(f'sag_rag_author_gap_total{{author="{key}"}} {count}')
+    lines.append("# HELP sag_rag_retrieval_failures_total Retrieval failure tags")
+    lines.append("# TYPE sag_rag_retrieval_failures_total counter")
+    with _lock:
+        for key, count in _retrieval_failure_count.items():
+            lines.append(f'sag_rag_retrieval_failures_total{{tag="{key}"}} {count}')
+    lines.append("# HELP sag_rag_hallucination_risk_bucket Hallucination risk buckets")
+    lines.append("# TYPE sag_rag_hallucination_risk_bucket histogram")
+    with _lock:
+        for key, count in _hallucination_risk_counts.items():
+            lines.append(f'sag_rag_hallucination_risk_bucket{{le="{key}"}} {count}')
     return "\n".join(lines) + "\n"

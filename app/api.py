@@ -11,7 +11,7 @@ from judge import judge_evidence, build_graph_context, build_graph_reasoning
 from synthesis import synthesize_answer
 from config import settings
 from store import log_query_result, fetch_audit_logs, export_audit_jsonl, log_feedback, fetch_feedback
-from metrics import render_prometheus, record_author_gap, record_author_query
+from metrics import render_prometheus, record_author_gap, record_author_query, record_retrieval_failure, record_hallucination_risk
 from continuous_learning import export_training_data, export_default_training_data
 
 router = APIRouter()
@@ -402,6 +402,38 @@ async def query_endpoint(request: Request):
         if non_author:
             reranked = non_author
 
+    retrieval_failures = []
+    if not reranked:
+        retrieval_failures.append("no_results")
+    if author_gap:
+        retrieval_failures.append("author_gap")
+    if len(reranked) < settings.min_results_count:
+        retrieval_failures.append("low_result_count")
+    if reranked:
+        top_score = reranked[0].get("rerank_score")
+        if top_score is None:
+            top_score = reranked[0].get("score")
+        try:
+            if top_score is not None and float(top_score) < settings.min_top_rerank_score:
+                retrieval_failures.append("low_top_score")
+        except Exception:
+            pass
+    for tag in retrieval_failures:
+        record_retrieval_failure(tag)
+    confidence = synthesis.get("confidence", 0.3) if isinstance(synthesis, dict) else 0.3
+    try:
+        hallucination_risk = 1.0 - float(confidence)
+    except Exception:
+        hallucination_risk = 0.7
+    if not synthesis.get("provenance"):
+        hallucination_risk += 0.2
+    if "low_top_score" in retrieval_failures:
+        hallucination_risk += 0.1
+    if author_gap:
+        hallucination_risk += 0.1
+    hallucination_risk = max(0.0, min(1.0, hallucination_risk))
+    record_hallucination_risk(hallucination_risk)
+
     response = {
         "user_id": user_id,
         "query": query,
@@ -409,6 +441,8 @@ async def query_endpoint(request: Request):
         "domain_source": domain_source,
         "author_terms": author_terms,
         "author_gap": author_gap,
+        "retrieval_failures": retrieval_failures,
+        "hallucination_risk": hallucination_risk,
         "intent": plan.get("intent"),
         "plan": plan,
         "results": reranked,
