@@ -5,6 +5,8 @@ _request_count = {}
 _request_latency_ms = {}
 _request_latency_buckets = [50, 100, 250, 500, 1000, 2000, 5000]
 _request_latency_counts = {}
+_author_gap_count = {}
+_author_query_count = {}
 
 def _key(method: str, path: str, status: int):
     return f"{method}|{path}|{status}"
@@ -20,6 +22,24 @@ def record_request(method: str, path: str, status: int, latency_ms: int):
                 _request_latency_counts[bkey] = _request_latency_counts.get(bkey, 0) + 1
         bkey = f"{key}|+Inf"
         _request_latency_counts[bkey] = _request_latency_counts.get(bkey, 0) + 1
+
+def record_author_query(author_terms):
+    if not author_terms:
+        return
+    key = ",".join(sorted({str(t).lower() for t in author_terms if str(t)}))
+    if not key:
+        return
+    with _lock:
+        _author_query_count[key] = _author_query_count.get(key, 0) + 1
+
+def record_author_gap(author_terms):
+    if not author_terms:
+        return
+    key = ",".join(sorted({str(t).lower() for t in author_terms if str(t)}))
+    if not key:
+        return
+    with _lock:
+        _author_gap_count[key] = _author_gap_count.get(key, 0) + 1
 
 def render_prometheus():
     lines = []
@@ -47,4 +67,14 @@ def render_prometheus():
             lines.append(
                 f'sag_rag_request_latency_ms_bucket{{method="{method}",path="{path}",status="{status}",le="{bucket}"}} {count}'
             )
+    lines.append("# HELP sag_rag_author_queries_total Queries with explicit author terms")
+    lines.append("# TYPE sag_rag_author_queries_total counter")
+    with _lock:
+        for key, count in _author_query_count.items():
+            lines.append(f'sag_rag_author_queries_total{{author="{key}"}} {count}')
+    lines.append("# HELP sag_rag_author_gap_total Author queries with no keyword-matching passages")
+    lines.append("# TYPE sag_rag_author_gap_total counter")
+    with _lock:
+        for key, count in _author_gap_count.items():
+            lines.append(f'sag_rag_author_gap_total{{author="{key}"}} {count}')
     return "\n".join(lines) + "\n"

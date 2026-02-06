@@ -65,6 +65,8 @@ Config (env vars)
 - `DOMAIN_MIN_KEYWORD_HITS` (default: 2)
 - `DOMAIN_ALIASES` (JSON dict of domain -> alias list)
 - `AUTHOR_BIAS` (implicit; author terms detected from query + domain keywords)
+- `QUERY_TERM_SYNONYMS` (JSON dict, e.g. {"fear":["dread","anxiety","timor"]})
+- `AUTHOR_INDEX_PATH` (path for author→source index written at ingest)
 - `POLICY_BLOCKLIST`, `POLICY_ALLOWLIST`
 - `POLICY_SOURCE_TYPES_ALLOW`, `POLICY_SOURCE_TYPES_BLOCK`
 - `POLICY_DOMAINS_ALLOW`, `POLICY_DOMAINS_BLOCK`
@@ -82,6 +84,12 @@ Author queries & fallback
 - If the query names an author (e.g., "Seneca"), results are biased toward that author.
 - Keyword expansion is applied (e.g., "fear" -> fear/dread/terror/anxiety/timor/metus).
 - If no author passages mention the query keywords, the response includes an explicit note and falls back to other sources (non-author results are shown).
+- Ingest builds a lightweight author→source index to speed author filtering.
+
+Example synonym config
+```
+QUERY_TERM_SYNONYMS={"fear":["dread","terror","anxiety","timor","metus"]}
+```
 
 Deployment
 - Docker Compose: `infra/docker-compose.yml`

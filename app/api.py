@@ -1,5 +1,7 @@
 # app/api.py
 from fastapi import APIRouter, Request, HTTPException, Response
+import json
+import os
 import re
 from ingestion import ingest_folder
 from speculative import plan_query
@@ -9,7 +11,7 @@ from judge import judge_evidence, build_graph_context, build_graph_reasoning
 from synthesis import synthesize_answer
 from config import settings
 from store import log_query_result, fetch_audit_logs, export_audit_jsonl, log_feedback, fetch_feedback
-from metrics import render_prometheus
+from metrics import render_prometheus, record_author_gap, record_author_query
 from continuous_learning import export_training_data, export_default_training_data
 
 router = APIRouter()
@@ -38,6 +40,42 @@ _TERM_SYNONYMS = {
     "fear": ["fear", "fears", "afraid", "anxiety", "anxious", "terror", "dread", "timor", "metus"],
     "death": ["death", "die", "dying", "mortality", "mors"],
 }
+
+def _merged_term_synonyms() -> dict[str, list[str]]:
+    merged = dict(_TERM_SYNONYMS)
+    extra = settings.query_term_synonyms or {}
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            key = str(k).strip().lower()
+            if not key:
+                continue
+            vals = [str(x).strip().lower() for x in (v or []) if str(x).strip()]
+            if not vals:
+                continue
+            merged.setdefault(key, [])
+            merged[key].extend(vals)
+    return merged
+
+_AUTHOR_INDEX_CACHE = None
+_AUTHOR_INDEX_MTIME = 0.0
+
+def _load_author_index() -> dict[str, list[str]]:
+    global _AUTHOR_INDEX_CACHE, _AUTHOR_INDEX_MTIME
+    path = settings.author_index_path
+    try:
+        mtime = os.path.getmtime(path)
+        if _AUTHOR_INDEX_CACHE is not None and mtime == _AUTHOR_INDEX_MTIME:
+            return _AUTHOR_INDEX_CACHE
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _AUTHOR_INDEX_CACHE = {str(k).lower(): list(v) for k, v in data.items() if k}
+        else:
+            _AUTHOR_INDEX_CACHE = {}
+        _AUTHOR_INDEX_MTIME = mtime
+    except Exception:
+        _AUTHOR_INDEX_CACHE = _AUTHOR_INDEX_CACHE or {}
+    return _AUTHOR_INDEX_CACHE or {}
 
 def _extract_author_mentions(query: str) -> list[str]:
     if not query:
@@ -72,10 +110,11 @@ def _extract_query_terms(query: str, author_terms: list[str]) -> list[str]:
         terms.append(t)
     # expand with simple synonyms
     expanded = []
+    synonyms = _merged_term_synonyms()
     for t in terms:
         expanded.append(t)
-        if t in _TERM_SYNONYMS:
-            expanded.extend(_TERM_SYNONYMS[t])
+        if t in synonyms:
+            expanded.extend(synonyms[t])
     # keep stable order, remove dups
     seen = set()
     out = []
@@ -112,6 +151,12 @@ def _author_matches(result: dict, author_terms: list[str]) -> bool:
         return False
     source = (result.get("source") or "").lower()
     text = (result.get("text") or "").lower()
+    author_index = _load_author_index()
+    if author_index:
+        for t in author_terms:
+            sources = author_index.get(t)
+            if sources and source in sources:
+                return True
     for t in author_terms:
         if t in source or t in text:
             return True
@@ -289,6 +334,7 @@ async def query_endpoint(request: Request):
     reranked = await rerank(query, deduped)
     author_gap = False
     if author_terms:
+        record_author_query(author_terms)
         for r in reranked:
             base = r.get("rerank_score")
             if base is None:
@@ -311,6 +357,7 @@ async def query_endpoint(request: Request):
                 else:
                     # No author passages mention the query terms; allow fallback.
                     author_gap = True
+                    record_author_gap(author_terms)
                     # Remove author bias so non-author relevance can surface.
                     for r in reranked:
                         rb = float(r.get("rerank_score") or 0.0)

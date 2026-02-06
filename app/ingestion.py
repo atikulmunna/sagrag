@@ -198,5 +198,26 @@ def ingest_folder(folder_path: str = "/data/docs", tenant: str | None = None):
                     print(f"graph ingest failed for {point['id']}: {e}")
             idx += 1
         sources.append(str(p.name))
+    author_index = {}
+    author_terms = set()
+    for keywords in (settings.domain_keywords or {}).values():
+        for kw in keywords:
+            kw_l = str(kw).strip().lower()
+            if kw_l:
+                author_terms.add(kw_l)
+    if author_terms and sources:
+        for src in sources:
+            src_l = src.lower()
+            for term in author_terms:
+                if term in src_l:
+                    author_index.setdefault(term, set()).add(src)
+        # write index to disk for fast author filtering
+        path = Path(settings.author_index_path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {k: sorted(list(v)) for k, v in author_index.items()}
+            path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+        except Exception as e:
+            print(f"author index write failed: {e}")
     print(f"Ingested {idx} chunks from {len(sources)} files.")
-    return {"ingested_chunks": idx, "sources": sources}
+    return {"ingested_chunks": idx, "sources": sources, "author_index_written": bool(author_index)}

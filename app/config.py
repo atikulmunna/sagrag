@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     domain_aliases: dict[str, list[str]] = {}
     domain_fallbacks: list[str] = []
     domain_min_keyword_hits: int = 2
+    query_term_synonyms: dict[str, list[str]] = {}
+    author_index_path: str = "/data/author_index.json"
 
     class Config:
         # set this to the path of your .env as mounted in the container.
