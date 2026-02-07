@@ -3,6 +3,92 @@
 Speculative -> Agentic -> Graph RAG backend with FastAPI, Qdrant, Elasticsearch, and Neo4j.
 This repo implements the full SAG-RAG pipeline and a local Docker Compose stack.
 
+Architecture diagram
+
+```mermaid
+---
+config:
+  look: neo
+  theme: redux
+---
+flowchart LR
+
+  subgraph A[1. Request and Planning]
+    direction TB
+    U[User Query]
+    API[FastAPI /v1/query]
+    PLAN[Speculative Planner]
+    ROUTE[Domain Router]
+    LLM[Ollama LLM\nllama3.2:1b]
+    U --> API
+    API --> PLAN
+    PLAN --> ROUTE
+    PLAN --> LLM
+  end
+
+  subgraph B[2. Retrieval Layer]
+    direction TB
+    RETR[Retrieval Fanout]
+    VEC[Vector Search\nQdrant]
+    LEX[Lexical Search\nElasticsearch]
+    STR[Structured Search\nES structured lines]
+    AUTH[Author Lexical Search\nES source.keyword]
+    RETR --> VEC
+    RETR --> LEX
+    RETR --> STR
+    RETR --> AUTH
+  end
+
+  subgraph C[3. Evidence Processing]
+    direction TB
+    AGG[Aggregate + Normalize]
+    POL[Policy + Freshness Filters]
+    DEDUP[Deduplicate Evidence]
+    BIAS[Author Bias\nsoft-strong]
+    RR[Re-ranker\nCross-Encoder]
+    AGG --> POL --> DEDUP --> BIAS --> RR
+  end
+
+  subgraph D[4. Optional Graph Reasoning]
+    direction TB
+    G[Knowledge Graph\nNeo4j]
+    J[Judge / Contradictions]
+    G --> J
+  end
+
+  subgraph E[5. Synthesis and Output]
+    direction TB
+    SYN[Synthesis]
+    OUT[Answer + Provenance + Scores]
+    SYN --> OUT
+  end
+
+  subgraph F[6. Ingestion Pipeline]
+    direction TB
+    DOCS[Docs]
+    CHUNK[Chunk + Embed]
+    ES[Elasticsearch Index]
+    QDR[Qdrant Vectors]
+    NEO[Neo4j Graph]
+    DOCS --> CHUNK
+    CHUNK --> ES
+    CHUNK --> QDR
+    CHUNK --> NEO
+  end
+
+  ROUTE --> RETR
+  API --> AUTH
+  VEC --> AGG
+  LEX --> AGG
+  STR --> AGG
+  AUTH --> AGG
+  RR --> SYN
+  SYN --> LLM
+  RR -.-> G
+  J -.-> SYN
+  J -.-> LLM
+```
+
 What we built
 - End-to-end SAG-RAG pipeline: speculative planning, multi-agent retrieval, re-ranking, graph reasoning, judge, and synthesis with provenance.
 - Local deployment: Docker Compose for the full stack.
