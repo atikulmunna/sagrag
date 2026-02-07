@@ -1,10 +1,5 @@
 # SAG-RAG Backend
 
-<figure align="center">
-  <img src="assets/architecture.png" alt="SAG-RAG Architecture" width="800" />
-  <figcaption>SAG-RAG system architecture</figcaption>
-</figure>
-
 Speculative -> Agentic -> Graph RAG backend with FastAPI, Qdrant, Elasticsearch, and Neo4j.
 This repo implements the full SAG-RAG pipeline and a local Docker Compose stack.
 
