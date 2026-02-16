@@ -1,9 +1,12 @@
 import asyncio
 import json
+import logging
 import re
 
 from llm_client import llm
 from config import settings
+
+_LOG = logging.getLogger(__name__)
 
 def _safe_json_extract(text: str):
     try:
@@ -13,6 +16,38 @@ def _safe_json_extract(text: str):
     except Exception:
         pass
     return None
+
+def _extract_sentences(text: str, max_sentences: int = 2):
+    if not text:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    out = []
+    for s in parts:
+        s = s.strip()
+        if len(s) < 20:
+            continue
+        if not re.match(r"^[A-Z]", s):
+            continue
+        out.append(s)
+        if len(out) >= max_sentences:
+            break
+    return out
+
+def _format_fallback_answer(picks, author_terms, author_gap):
+    sentences = []
+    for p in picks:
+        text = (p.get("text") or "").strip()
+        if not text:
+            continue
+        sentences.extend(_extract_sentences(text, max_sentences=2))
+        if len(sentences) >= 2:
+            break
+    if not sentences:
+        return ""
+    if author_terms and author_gap:
+        prefix = f"No direct passages from {', '.join(author_terms)} mention the query keywords in the current dataset. "
+        return prefix + " ".join(sentences[:2])
+    return " ".join(sentences[:2])
 
 async def synthesize_answer(query, evidence, judge_output, author_terms=None, author_gap=False):
     evidence_snippets = []
@@ -113,6 +148,7 @@ Evidence snippets:
                     if p.get("offset_start") is not None and p.get("offset_end") is not None and p.get("source")
                 ]
             return parsed
+        _LOG.warning("synthesis_parse_failed")
         # Non-JSON fallback: use raw text as answer with best-effort provenance.
         trusted = []
         if isinstance(judge_output, dict):
@@ -140,6 +176,7 @@ Evidence snippets:
             if p.get("offset_start") is not None and p.get("offset_end") is not None and p.get("source")
         ]
         if out and out.strip():
+            _LOG.warning("synthesis_non_json")
             return {
                 "answer": out.strip(),
                 "provenance": provenance,
@@ -147,7 +184,7 @@ Evidence snippets:
                 "explain_trace": "synthesis_non_json",
             }
     except Exception:
-        pass
+        _LOG.exception("synthesis_failed")
     fallback = {
         "answer": "",
         "provenance": [],
@@ -180,16 +217,8 @@ Evidence snippets:
         if p.get("offset_start") is not None and p.get("offset_end") is not None and p.get("source")
     ]
     if not fallback["answer"]:
-        snippets = []
-        for p in picks[:2]:
-            text = (p.get("text") or "").strip()
-            if text:
-                snippets.append(text[:280])
-        if snippets:
-            if author_terms and author_gap:
-                prefix = f"No direct passages from {', '.join(author_terms)} mention the query keywords in the current dataset. "
-                fallback["answer"] = prefix + "Other Stoic sources emphasize focusing on what is in your control, not external threats."
-            else:
-                fallback["answer"] = "Based on the available evidence: " + " ".join(snippets)
-            fallback["explain_trace"] = "synthesis_extractive_fallback"
+        formatted = _format_fallback_answer(picks, author_terms, author_gap)
+        if formatted:
+            fallback["answer"] = formatted
+            fallback["explain_trace"] = "synthesis_fallback_formatted"
     return fallback

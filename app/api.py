@@ -11,7 +11,7 @@ from judge import judge_evidence, build_graph_context, build_graph_reasoning
 from synthesis import synthesize_answer
 from config import settings
 from store import log_query_result, fetch_audit_logs, export_audit_jsonl, log_feedback, fetch_feedback
-from metrics import render_prometheus, record_author_gap, record_author_query, record_retrieval_failure, record_hallucination_risk
+from metrics import render_prometheus, record_author_gap, record_author_query, record_retrieval_failure, record_hallucination_risk, record_evidence_coverage
 from continuous_learning import export_training_data, export_default_training_data
 
 router = APIRouter()
@@ -239,6 +239,10 @@ async def query_endpoint(request: Request):
         tenant = body.get("tenant") if isinstance(body, dict) else None
         tenant = tenant or user_id
     raw_results = await run_agents(queries, domain=domain, fallback_domains=fallback_domains, tenant=tenant)
+    counts_raw = {}
+    for r in raw_results:
+        agent = r.get("agent") or "unknown"
+        counts_raw[agent] = counts_raw.get(agent, 0) + 1
 
     # Normalize results
     normalized = []
@@ -273,6 +277,11 @@ async def query_endpoint(request: Request):
         rules=settings.policy_rules,
     )
     normalized = apply_freshness_filter(normalized, freshness_days=freshness_days)
+    counts_post_policy = {}
+    for r in normalized:
+        agent = r.get("agent") or "unknown"
+        counts_post_policy[agent] = counts_post_policy.get(agent, 0) + 1
+    distinct_domains = sorted({r.get("domain") for r in normalized if r.get("domain")})
 
     # Dedupe by normalized text
     seen = set()
@@ -403,6 +412,15 @@ async def query_endpoint(request: Request):
             reranked = non_author
 
     retrieval_failures = []
+    if not domain:
+        retrieval_failures.append("no_domain")
+    if raw_results and not normalized:
+        retrieval_failures.append("policy_blocked")
+    for agent_name in ("vector", "lexical", "structured", "lexical_author"):
+        if counts_raw.get(agent_name, 0) == 0:
+            retrieval_failures.append(f"{agent_name}_empty")
+    if domain and len(distinct_domains) > 1:
+        retrieval_failures.append("cross_domain_conflict")
     if not reranked:
         retrieval_failures.append("no_results")
     if author_gap:
@@ -425,14 +443,18 @@ async def query_endpoint(request: Request):
         hallucination_risk = 1.0 - float(confidence)
     except Exception:
         hallucination_risk = 0.7
-    if not synthesis.get("provenance"):
+    provenance = synthesis.get("provenance") if isinstance(synthesis, dict) else []
+    if not provenance:
         hallucination_risk += 0.2
     if "low_top_score" in retrieval_failures:
         hallucination_risk += 0.1
     if author_gap:
         hallucination_risk += 0.1
     hallucination_risk = max(0.0, min(1.0, hallucination_risk))
+    denom = max(1, min(settings.max_evidence_snippets, len(reranked)))
+    evidence_coverage = min(1.0, float(len(provenance)) / float(denom))
     record_hallucination_risk(hallucination_risk)
+    record_evidence_coverage(evidence_coverage)
 
     response = {
         "user_id": user_id,
@@ -441,8 +463,14 @@ async def query_endpoint(request: Request):
         "domain_source": domain_source,
         "author_terms": author_terms,
         "author_gap": author_gap,
+        "retrieval_stats": {
+            "counts_raw": counts_raw,
+            "counts_post_policy": counts_post_policy,
+            "distinct_domains": distinct_domains,
+        },
         "retrieval_failures": retrieval_failures,
         "hallucination_risk": hallucination_risk,
+        "evidence_coverage": evidence_coverage,
         "intent": plan.get("intent"),
         "plan": plan,
         "results": reranked,

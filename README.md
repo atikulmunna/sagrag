@@ -180,6 +180,7 @@ QUERY_TERM_SYNONYMS={"fear":["dread","terror","anxiety","timor","metus"]}
 Failure analysis (current)
 - Retrieval failure tags: `no_results`, `author_gap`, `low_result_count`, `low_top_score`.
 - Hallucination risk metric exposed in `/metrics`.
+- Evidence coverage ratio metric exposed in `/metrics`.
 
 Ablation helper
 - Use `tools/ablation_eval.py` with multiple base URLs (different env configs) to compare outputs.
