@@ -233,12 +233,17 @@ async def query_endpoint(request: Request):
     if domain_source != "keyword":
         # When domain isn't inferred, search base + fallback domains for coverage.
         fallback_domains = list({d for d in fallback_domains if d})
-    queries = plan.get("queries", [query])
+    queries_raw = plan.get("queries", [query])
+    if not isinstance(queries_raw, list):
+        queries_raw = [queries_raw]
+    queries = [str(q) for q in queries_raw if q is not None and str(q).strip()]
+    if not queries:
+        queries = [str(query)]
     tenant = None
     if settings.tenant_isolation:
         tenant = body.get("tenant") if isinstance(body, dict) else None
         tenant = tenant or user_id
-    raw_results = await run_agents(queries, domain=domain, fallback_domains=fallback_domains, tenant=tenant)
+    raw_results, agent_diagnostics = await run_agents(queries, domain=domain, fallback_domains=fallback_domains, tenant=tenant)
     counts_raw = {}
     for r in raw_results:
         agent = r.get("agent") or "unknown"
@@ -294,7 +299,11 @@ async def query_endpoint(request: Request):
         deduped.append(r)
 
     deduped, author_terms = _apply_author_bias(deduped, query)
+    author_search_attempted = False
+    author_diag = {"attempted": 0, "ok": 0, "zero_hits": 0, "timeout": 0, "error": 0}
+    author_raw_count = 0
     if author_terms:
+        author_search_attempted = True
         query_terms = _extract_query_terms(query, author_terms)
         author_queries = [query]
         if query_terms:
@@ -302,14 +311,21 @@ async def query_endpoint(request: Request):
                 author_queries.append(f"{t} {' '.join(query_terms)}")
         author_hits = []
         for q in author_queries:
-            author_hits += await author_lexical_search(
+            hits, status = await author_lexical_search(
                 q,
                 author_terms,
                 required_terms=query_terms,
                 k=24,
                 domain=domain,
                 tenant=tenant,
+                return_status=True,
             )
+            author_diag["attempted"] += 1
+            author_diag[status] = author_diag.get(status, 0) + 1
+            author_raw_count += len(hits)
+            author_hits += hits
+        if author_raw_count:
+            counts_raw["lexical_author"] = counts_raw.get("lexical_author", 0) + author_raw_count
         for r in author_hits:
             payload = r.get("payload") or {}
             source = r.get("source") or {}
@@ -403,7 +419,7 @@ async def query_endpoint(request: Request):
     synthesis = {"answer": "", "provenance": [], "confidence": judge_output.get("confidence", 0.3), "explain_trace": "synthesis_disabled"}
     if settings.enable_synthesis:
         synthesis = await synthesize_answer(query, reranked, judge_output, author_terms, author_gap)
-        if not synthesis.get("answer") and synthesis.get("explain_trace") == "synthesis_unavailable":
+        if not synthesis.get("answer") and synthesis.get("explain_trace") in ("synthesis_unavailable", "synthesis_timeout", "synthesis_error"):
             synthesis["answer"] = "I could not synthesize a confident answer from the available evidence."
 
     if author_gap and author_terms:
@@ -416,15 +432,36 @@ async def query_endpoint(request: Request):
         retrieval_failures.append("no_domain")
     if raw_results and not normalized:
         retrieval_failures.append("policy_blocked")
-    for agent_name in ("vector", "lexical", "structured", "lexical_author"):
-        if counts_raw.get(agent_name, 0) == 0:
-            retrieval_failures.append(f"{agent_name}_empty")
+    def _append_agent_failure(agent_name: str, diag: dict | None):
+        d = diag or {}
+        attempted = int(d.get("attempted") or 0)
+        if attempted == 0:
+            return
+        if int(d.get("ok") or 0) > 0:
+            return
+        if int(d.get("timeout") or 0) > 0:
+            retrieval_failures.append(f"{agent_name}_timeout")
+            return
+        if int(d.get("error") or 0) > 0:
+            retrieval_failures.append(f"{agent_name}_error")
+            return
+        retrieval_failures.append(f"{agent_name}_zero_hits")
+
+    for agent_name in ("vector", "lexical", "structured"):
+        _append_agent_failure(agent_name, agent_diagnostics.get(agent_name))
+    if author_search_attempted:
+        _append_agent_failure("lexical_author", author_diag)
     if domain and len(distinct_domains) > 1:
         retrieval_failures.append("cross_domain_conflict")
     if not reranked:
         retrieval_failures.append("no_results")
     if author_gap:
         retrieval_failures.append("author_gap")
+    explain_trace = synthesis.get("explain_trace") if isinstance(synthesis, dict) else None
+    if explain_trace == "synthesis_timeout":
+        retrieval_failures.append("synthesis_timeout")
+    elif explain_trace in ("synthesis_error", "synthesis_unavailable"):
+        retrieval_failures.append("synthesis_error")
     if len(reranked) < settings.min_results_count:
         retrieval_failures.append("low_result_count")
     if reranked:
@@ -467,6 +504,11 @@ async def query_endpoint(request: Request):
             "counts_raw": counts_raw,
             "counts_post_policy": counts_post_policy,
             "distinct_domains": distinct_domains,
+            "author_search_attempted": author_search_attempted,
+            "agent_diagnostics": {
+                **agent_diagnostics,
+                "lexical_author": author_diag if author_search_attempted else {"attempted": 0, "ok": 0, "zero_hits": 0, "timeout": 0, "error": 0},
+            },
         },
         "retrieval_failures": retrieval_failures,
         "hallucination_risk": hallucination_risk,

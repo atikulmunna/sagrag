@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     reranker_top_k: int = 10
     judge_timeout_s: float = 8.0
     synthesis_timeout_s: float = 12.0
+    retriever_timeout_s: float = 12.0
     judge_max_tokens: int = 150
     synthesis_max_tokens: int = 250
     max_evidence_snippets: int = 8

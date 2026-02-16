@@ -104,6 +104,7 @@ Evidence scores (if any):
 Evidence snippets:
 {evidence_snippets}
 """
+    fail_trace = "synthesis_unavailable"
     try:
         out = await asyncio.wait_for(
             llm.completion(prompt, max_tokens=settings.synthesis_max_tokens),
@@ -183,13 +184,17 @@ Evidence snippets:
                 "confidence": judge_output.get("confidence", 0.3) if isinstance(judge_output, dict) else 0.3,
                 "explain_trace": "synthesis_non_json",
             }
+    except asyncio.TimeoutError:
+        fail_trace = "synthesis_timeout"
+        _LOG.exception("synthesis_timeout")
     except Exception:
+        fail_trace = "synthesis_error"
         _LOG.exception("synthesis_failed")
     fallback = {
         "answer": "",
         "provenance": [],
         "confidence": judge_output.get("confidence", 0.3) if isinstance(judge_output, dict) else 0.3,
-        "explain_trace": "synthesis_unavailable",
+        "explain_trace": fail_trace,
     }
     trusted = []
     if isinstance(judge_output, dict):
@@ -220,5 +225,8 @@ Evidence snippets:
         formatted = _format_fallback_answer(picks, author_terms, author_gap)
         if formatted:
             fallback["answer"] = formatted
-            fallback["explain_trace"] = "synthesis_fallback_formatted"
+            # Preserve timeout/error traces for telemetry; only mark
+            # formatted fallback when there was no explicit synthesis failure.
+            if fail_trace == "synthesis_unavailable":
+                fallback["explain_trace"] = "synthesis_fallback_formatted"
     return fallback

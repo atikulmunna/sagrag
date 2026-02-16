@@ -146,6 +146,7 @@ Local env
 Config (env vars)
 - `OLLAMA_URL`, `OLLAMA_MODEL`
 - `QDRANT_URL`, `ELASTIC_URL`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`
+- `RETRIEVER_TIMEOUT_S` (per-retriever timeout in seconds; default: 12)
 - `GRAPH_ENABLED` (true/false)
 - `DOMAIN_KEYWORDS` (JSON dict of domain -> keyword list)
 - `DOMAIN_MIN_KEYWORD_HITS` (default: 2)
@@ -178,7 +179,7 @@ QUERY_TERM_SYNONYMS={"fear":["dread","terror","anxiety","timor","metus"]}
 ```
 
 Failure analysis (current)
-- Retrieval failure tags: `no_results`, `author_gap`, `low_result_count`, `low_top_score`.
+- Retrieval failure tags: `no_domain`, `policy_blocked`, `vector_timeout|vector_zero_hits|vector_error`, `lexical_timeout|lexical_zero_hits|lexical_error`, `structured_timeout|structured_zero_hits|structured_error`, `lexical_author_timeout|lexical_author_zero_hits|lexical_author_error` (author queries), `cross_domain_conflict`, `no_results`, `author_gap`, `synthesis_timeout|synthesis_error`, `low_result_count`, `low_top_score`.
 - Hallucination risk metric exposed in `/metrics`.
 - Evidence coverage ratio metric exposed in `/metrics`.
 

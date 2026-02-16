@@ -2,12 +2,15 @@
 import asyncio
 import time
 import contextlib
+import logging
 from config import settings
 try:
     from opentelemetry import trace
     _TRACER = trace.get_tracer(__name__)
 except Exception:
     _TRACER = None
+
+_LOG = logging.getLogger(__name__)
 
 QDRANT_COLLECTION = "docs"
 ELASTIC_INDEX = "docs_index"
@@ -56,32 +59,87 @@ def _load_embed_model():
         _EMB_MODEL = SentenceTransformer(settings.embedding_model_name)
     return _EMB_MODEL
 
-async def vector_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None, tenant: str | None = None):
+def _point_field(point, name, default=None):
+    try:
+        if isinstance(point, dict):
+            return point.get(name, default)
+        return getattr(point, name, default)
+    except Exception:
+        return default
+
+def _qdrant_points(resp):
+    if resp is None:
+        return []
+    if isinstance(resp, list):
+        return resp
+    pts = _point_field(resp, "points")
+    if isinstance(pts, list):
+        return pts
+    if isinstance(resp, dict):
+        result = resp.get("result")
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            pts2 = result.get("points")
+            if isinstance(pts2, list):
+                return pts2
+    return []
+
+async def vector_search(
+    query_text: str,
+    k: int = 6,
+    timeout_s: float | None = None,
+    domain: str | None = None,
+    tenant: str | None = None,
+    return_status: bool = False,
+):
+    if not isinstance(query_text, str):
+        query_text = str(query_text)
+    timeout_s = float(timeout_s or settings.retriever_timeout_s)
     start = time.monotonic()
     span_cm = _TRACER.start_as_current_span("retriever.vector") if _TRACER else contextlib.nullcontext()
     def _sync_search():
         model = _load_embed_model()
         q_emb = model.encode([query_text])[0].tolist()
-        # NOTE: qdrant-client versions vary; this common call works for many.
         qdrant = _get_qdrant()
-        collection = QDRANT_COLLECTION
-        if tenant:
-            collection = f"{collection}_{tenant}"
+        collections = []
         if domain:
-            collection = f"{QDRANT_COLLECTION}_{domain}"
-        try:
-            resp = qdrant.search(collection_name=collection, query_vector=q_emb, limit=k)
-        except Exception:
-            resp = qdrant.search(collection_name=QDRANT_COLLECTION, query_vector=q_emb, limit=k)
-        results = []
-        for r in resp:
-            # r may be object or dict depending on client version
+            collections.append(f"{QDRANT_COLLECTION}_{domain}")
+        elif tenant:
+            collections.append(f"{QDRANT_COLLECTION}_{tenant}")
+        collections.append(QDRANT_COLLECTION)
+
+        last_err = None
+        resp = None
+        for collection in collections:
             try:
-                rid = getattr(r, "id", r.get("id"))
-                score = float(getattr(r, "score", r.get("score", 0.0)))
-                payload = getattr(r, "payload", r.get("payload", {}))
-            except Exception:
+                # Older client path.
+                resp = qdrant.search(collection_name=collection, query_vector=q_emb, limit=k)
+                break
+            except Exception as e_search:
+                last_err = e_search
+                try:
+                    # Newer client path (returns QueryResponse with .points).
+                    resp = qdrant.query_points(collection_name=collection, query=q_emb, limit=k)
+                    break
+                except Exception as e_query:
+                    last_err = e_query
+                    resp = None
+                    continue
+        if resp is None and last_err is not None:
+            raise last_err
+
+        points = _qdrant_points(resp)
+        results = []
+        for r in points:
+            rid = _point_field(r, "id")
+            if rid is None:
                 continue
+            try:
+                score = float(_point_field(r, "score", 0.0) or 0.0)
+            except Exception:
+                score = 0.0
+            payload = _point_field(r, "payload", {}) or {}
             results.append({"id": rid, "score": score, "payload": payload})
         return results
     with span_cm as span:
@@ -90,15 +148,29 @@ async def vector_search(query_text: str, k: int = 6, timeout_s: float = 5.0, dom
             span.set_attribute("retriever.domain", domain or "")
         try:
             results = await asyncio.wait_for(asyncio.to_thread(_sync_search), timeout=timeout_s)
-        except Exception:
-            return []
+        except asyncio.TimeoutError:
+            return ([], "timeout") if return_status else []
+        except Exception as e:
+            _LOG.warning("vector_search_failed", exc_info=e)
+            return ([], "error") if return_status else []
     elapsed_ms = int((time.monotonic() - start) * 1000)
     for r in results:
         r["agent"] = "vector"
         r["elapsed_ms"] = elapsed_ms
-    return results
+    status = "ok" if results else "zero_hits"
+    return (results, status) if return_status else results
 
-async def lexical_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None, tenant: str | None = None):
+async def lexical_search(
+    query_text: str,
+    k: int = 6,
+    timeout_s: float | None = None,
+    domain: str | None = None,
+    tenant: str | None = None,
+    return_status: bool = False,
+):
+    if not isinstance(query_text, str):
+        query_text = str(query_text)
+    timeout_s = float(timeout_s or settings.retriever_timeout_s)
     start = time.monotonic()
     span_cm = _TRACER.start_as_current_span("retriever.lexical") if _TRACER else contextlib.nullcontext()
     def _sync_search():
@@ -121,25 +193,32 @@ async def lexical_search(query_text: str, k: int = 6, timeout_s: float = 5.0, do
             span.set_attribute("retriever.domain", domain or "")
         try:
             results = await asyncio.wait_for(asyncio.to_thread(_sync_search), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            return ([], "timeout") if return_status else []
         except Exception:
-            return []
+            return ([], "error") if return_status else []
     elapsed_ms = int((time.monotonic() - start) * 1000)
     for r in results:
         r["agent"] = "lexical"
         r["elapsed_ms"] = elapsed_ms
-    return results
+    status = "ok" if results else "zero_hits"
+    return (results, status) if return_status else results
 
 async def author_lexical_search(
     query_text: str,
     author_terms: list[str],
     required_terms: list[str] | None = None,
     k: int = 6,
-    timeout_s: float = 5.0,
+    timeout_s: float | None = None,
     domain: str | None = None,
     tenant: str | None = None,
+    return_status: bool = False,
 ):
     if not author_terms:
         return []
+    if not isinstance(query_text, str):
+        query_text = str(query_text)
+    timeout_s = float(timeout_s or settings.retriever_timeout_s)
     span_cm = _TRACER.start_as_current_span("retriever.lexical.author") if _TRACER else contextlib.nullcontext()
     def _sync_search():
         # Match author terms against source.keyword with a wildcard so
@@ -197,11 +276,14 @@ async def author_lexical_search(
             span.set_attribute("retriever.domain", domain or "")
         try:
             results = await asyncio.wait_for(asyncio.to_thread(_sync_search), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            return ([], "timeout") if return_status else []
         except Exception:
-            return []
+            return ([], "error") if return_status else []
     for r in results:
         r["agent"] = "lexical_author"
-    return results
+    status = "ok" if results else "zero_hits"
+    return (results, status) if return_status else results
 
 def _extract_structured_lines(text: str, tokens: list[str], max_lines: int = 6):
     lines = []
@@ -223,7 +305,15 @@ def _extract_structured_lines(text: str, tokens: list[str], max_lines: int = 6):
             break
     return lines
 
-async def structured_search(query_text: str, k: int = 6, timeout_s: float = 5.0, domain: str | None = None, tenant: str | None = None):
+async def structured_search(
+    query_text: str,
+    k: int = 6,
+    timeout_s: float | None = None,
+    domain: str | None = None,
+    tenant: str | None = None,
+    return_status: bool = False,
+):
+    timeout_s = float(timeout_s or settings.retriever_timeout_s)
     span_cm = _TRACER.start_as_current_span("retriever.structured") if _TRACER else contextlib.nullcontext()
     with span_cm as span:
         if span:
@@ -232,7 +322,14 @@ async def structured_search(query_text: str, k: int = 6, timeout_s: float = 5.0,
         if not isinstance(query_text, str):
             query_text = str(query_text)
         tokens = [t for t in query_text.lower().split() if len(t) > 2]
-        base = await lexical_search(query_text, k=k, timeout_s=timeout_s, domain=domain, tenant=tenant)
+        base, base_status = await lexical_search(
+            query_text,
+            k=k,
+            timeout_s=timeout_s,
+            domain=domain,
+            tenant=tenant,
+            return_status=True,
+        )
         out = []
         for r in base:
             source = r.get("source") or {}
@@ -254,11 +351,14 @@ async def structured_search(query_text: str, k: int = 6, timeout_s: float = 5.0,
                     "elapsed_ms": r.get("elapsed_ms"),
                 })
                 if len(out) >= k:
-                    return out
-        return out
+                    status = "ok" if out else base_status
+                    return (out, status) if return_status else out
+        status = "ok" if out else base_status
+        return (out, status) if return_status else out
 
 async def run_agents(queries, domain: str | None = None, fallback_domains: list[str] | None = None, tenant: str | None = None):
     tasks = []
+    task_meta = []
     search_domains = [domain] if domain else []
     if fallback_domains:
         for d in fallback_domains:
@@ -268,11 +368,21 @@ async def run_agents(queries, domain: str | None = None, fallback_domains: list[
         search_domains = [None]
     for q in queries:
         for d in search_domains:
-            tasks.append(vector_search(q, domain=d, tenant=tenant))
-            tasks.append(lexical_search(q, domain=d, tenant=tenant))
-            tasks.append(structured_search(q, domain=d, tenant=tenant))
+            tasks.append(vector_search(q, domain=d, tenant=tenant, return_status=True))
+            task_meta.append("vector")
+            tasks.append(lexical_search(q, domain=d, tenant=tenant, return_status=True))
+            task_meta.append("lexical")
+            tasks.append(structured_search(q, domain=d, tenant=tenant, return_status=True))
+            task_meta.append("structured")
     res = await asyncio.gather(*tasks)
-    flattened = [item for sub in res for item in sub]
+    diagnostics = {}
+    flattened = []
+    for agent_name, item in zip(task_meta, res):
+        results, status = item
+        flattened.extend(results)
+        entry = diagnostics.setdefault(agent_name, {"attempted": 0, "ok": 0, "zero_hits": 0, "timeout": 0, "error": 0})
+        entry["attempted"] += 1
+        entry[status] = entry.get(status, 0) + 1
     seen = set()
     out = []
     for r in flattened:
@@ -280,7 +390,7 @@ async def run_agents(queries, domain: str | None = None, fallback_domains: list[
         if rid not in seen:
             seen.add(rid)
             out.append(r)
-    return out
+    return out, diagnostics
 
 def route_domain(query: str, constraints: dict | None = None, preferences: dict | None = None):
     if constraints and isinstance(constraints, dict):
