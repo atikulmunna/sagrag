@@ -32,11 +32,10 @@ flowchart LR
     VEC[Vector Search\nQdrant]
     LEX[Lexical Search\nElasticsearch]
     STR[Structured Search\nES structured lines]
-    AUTH[Author Lexical Search\nES source.keyword]
+    AUTH[Author Lexical Search\nConditional ES source keyword]
     RETR --> VEC
     RETR --> LEX
     RETR --> STR
-    RETR --> AUTH
   end
 
   subgraph C[3. Evidence Processing]
@@ -58,12 +57,23 @@ flowchart LR
 
   subgraph E[5. Synthesis and Output]
     direction TB
-    SYN[Synthesis]
+    SYN[Synthesis and Fallback\nnon_json timeout error]
     OUT[Answer + Provenance + Scores]
     SYN --> OUT
   end
 
-  subgraph F[6. Ingestion Pipeline]
+  subgraph F[6. Telemetry]
+    direction TB
+    OBS[Metrics + Diagnostics]
+    RF[retrieval_failures]
+    AD[agent_diagnostics]
+    SM[synthesis outcomes + latency]
+    OBS --> RF
+    OBS --> AD
+    OBS --> SM
+  end
+
+  subgraph G[7. Ingestion Pipeline]
     direction TB
     DOCS[Docs]
     CHUNK[Chunk + Embed]
@@ -77,7 +87,7 @@ flowchart LR
   end
 
   ROUTE --> RETR
-  API --> AUTH
+  API -. explicit author terms .-> AUTH
   VEC --> AGG
   LEX --> AGG
   STR --> AGG
@@ -87,6 +97,7 @@ flowchart LR
   RR -.-> G
   J -.-> SYN
   J -.-> LLM
+  OUT --> OBS
 ```
 
 What we built
@@ -122,14 +133,14 @@ Tools and techniques used
 
 Architecture (high level)
 1) Client sends query to FastAPI.
-2) Speculative planner emits intent and sub-queries.
+2) Speculative planner emits intent and sub-queries (normalized before fanout).
 3) Agent controller fans out to vector/lexical/structured retrievers.
-4) Results deduped and re-ranked.
-5) Graph builder enriches evidence (entities, claims, relations).
-6) Graph reasoning produces evidence scores and contradiction signals.
+4) Author lexical retrieval runs when explicit author terms are detected.
+5) Results are filtered, deduped, author-biased, and re-ranked.
+6) Graph builder optionally enriches evidence (entities, claims, relations).
 7) Judge validates evidence and sets confidence.
-8) Synthesis generates final answer with provenance.
-9) Feedback and audit logs stored for analysis.
+8) Synthesis returns JSON or fallback output (`non_json`, `timeout`, `error` paths).
+9) Telemetry emits retrieval failures, agent diagnostics, and synthesis latency/outcomes.
 
 Total workflow (query path)
 Request -> plan -> retrieve -> dedupe -> rerank -> graph context -> judge -> synthesis -> response.
@@ -185,6 +196,28 @@ Failure analysis (current)
 - Synthesis observability in `/metrics`:
   - `sag_rag_synthesis_total{outcome=...}`
   - `sag_rag_synthesis_latency_ms_bucket{outcome=...,le=...}` (use for p95)
+
+Observability flow
+
+```mermaid
+flowchart LR
+  Q[POST v1 query] --> R[Retrieve and Rerank]
+  R --> S[Synthesis]
+  S --> O[Response]
+
+  R --> RF[retrieval_failures tags]
+  R --> AD[agent_diagnostics]
+  O --> HR[hallucination_risk]
+  O --> EC[evidence_coverage]
+  S --> SO[sag_rag_synthesis_total]
+  S --> SL[sag_rag_synthesis_latency_ms_bucket]
+  RF --> M[GET metrics]
+  AD --> M
+  HR --> M
+  EC --> M
+  SO --> M
+  SL --> M
+```
 
 Ablation helper
 - Use `tools/ablation_eval.py` with multiple base URLs (different env configs) to compare outputs.
