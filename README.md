@@ -182,6 +182,9 @@ Failure analysis (current)
 - Retrieval failure tags: `no_domain`, `policy_blocked`, `vector_timeout|vector_zero_hits|vector_error`, `lexical_timeout|lexical_zero_hits|lexical_error`, `structured_timeout|structured_zero_hits|structured_error`, `lexical_author_timeout|lexical_author_zero_hits|lexical_author_error` (author queries), `cross_domain_conflict`, `no_results`, `author_gap`, `synthesis_timeout|synthesis_error`, `low_result_count`, `low_top_score`.
 - Hallucination risk metric exposed in `/metrics`.
 - Evidence coverage ratio metric exposed in `/metrics`.
+- Synthesis observability in `/metrics`:
+  - `sag_rag_synthesis_total{outcome=...}`
+  - `sag_rag_synthesis_latency_ms_bucket{outcome=...,le=...}` (use for p95)
 
 Ablation helper
 - Use `tools/ablation_eval.py` with multiple base URLs (different env configs) to compare outputs.

@@ -12,6 +12,10 @@ _hallucination_risk_buckets = [0.2, 0.4, 0.6, 0.8, 1.0]
 _hallucination_risk_counts = {}
 _evidence_coverage_buckets = [0.25, 0.5, 0.75, 1.0]
 _evidence_coverage_counts = {}
+_synthesis_outcome_count = {}
+_synthesis_latency_ms_total = {}
+_synthesis_latency_ms_buckets = [100, 250, 500, 1000, 2000, 5000, 10000, 20000]
+_synthesis_latency_ms_counts = {}
 
 def _key(method: str, path: str, status: int):
     return f"{method}|{path}|{status}"
@@ -87,6 +91,26 @@ def record_evidence_coverage(ratio: float):
                 _evidence_coverage_counts[key] = _evidence_coverage_counts.get(key, 0) + 1
         _evidence_coverage_counts["+Inf"] = _evidence_coverage_counts.get("+Inf", 0) + 1
 
+def record_synthesis(outcome: str, latency_ms: float):
+    key = str(outcome or "").strip().lower()
+    if not key:
+        key = "unknown"
+    try:
+        ms = float(latency_ms)
+    except Exception:
+        ms = 0.0
+    if ms < 0:
+        ms = 0.0
+    with _lock:
+        _synthesis_outcome_count[key] = _synthesis_outcome_count.get(key, 0) + 1
+        _synthesis_latency_ms_total[key] = _synthesis_latency_ms_total.get(key, 0.0) + ms
+        for b in _synthesis_latency_ms_buckets:
+            if ms <= b:
+                bkey = f"{key}|{b}"
+                _synthesis_latency_ms_counts[bkey] = _synthesis_latency_ms_counts.get(bkey, 0) + 1
+        bkey = f"{key}|+Inf"
+        _synthesis_latency_ms_counts[bkey] = _synthesis_latency_ms_counts.get(bkey, 0) + 1
+
 def render_prometheus():
     lines = []
     lines.append("# HELP sag_rag_requests_total Total HTTP requests")
@@ -138,4 +162,20 @@ def render_prometheus():
     with _lock:
         for key, count in _evidence_coverage_counts.items():
             lines.append(f'sag_rag_evidence_coverage_bucket{{le="{key}"}} {count}')
+    lines.append("# HELP sag_rag_synthesis_total Synthesis outcomes")
+    lines.append("# TYPE sag_rag_synthesis_total counter")
+    with _lock:
+        for key, count in _synthesis_outcome_count.items():
+            lines.append(f'sag_rag_synthesis_total{{outcome="{key}"}} {count}')
+    lines.append("# HELP sag_rag_synthesis_latency_ms_total Total synthesis latency in ms by outcome")
+    lines.append("# TYPE sag_rag_synthesis_latency_ms_total counter")
+    with _lock:
+        for key, total_ms in _synthesis_latency_ms_total.items():
+            lines.append(f'sag_rag_synthesis_latency_ms_total{{outcome="{key}"}} {total_ms}')
+    lines.append("# HELP sag_rag_synthesis_latency_ms_bucket Synthesis latency histogram buckets")
+    lines.append("# TYPE sag_rag_synthesis_latency_ms_bucket histogram")
+    with _lock:
+        for key, count in _synthesis_latency_ms_counts.items():
+            outcome, bucket = key.split("|", 1)
+            lines.append(f'sag_rag_synthesis_latency_ms_bucket{{outcome="{outcome}",le="{bucket}"}} {count}')
     return "\n".join(lines) + "\n"

@@ -2,9 +2,11 @@ import asyncio
 import json
 import logging
 import re
+import time
 
 from llm_client import llm
 from config import settings
+from metrics import record_synthesis
 
 _LOG = logging.getLogger(__name__)
 
@@ -50,6 +52,12 @@ def _format_fallback_answer(picks, author_terms, author_gap):
     return " ".join(sentences[:2])
 
 async def synthesize_answer(query, evidence, judge_output, author_terms=None, author_gap=False):
+    started = time.monotonic()
+    def _finish(payload: dict, outcome: str):
+        latency_ms = int((time.monotonic() - started) * 1000)
+        record_synthesis(outcome, latency_ms)
+        return payload
+
     evidence_snippets = []
     for e in evidence[: settings.max_evidence_snippets]:
         snippet = e.get("text", "")[:500]
@@ -148,7 +156,7 @@ Evidence snippets:
                     for p in picks
                     if p.get("offset_start") is not None and p.get("offset_end") is not None and p.get("source")
                 ]
-            return parsed
+            return _finish(parsed, "success")
         _LOG.warning("synthesis_parse_failed")
         # Non-JSON fallback: use raw text as answer with best-effort provenance.
         trusted = []
@@ -178,12 +186,12 @@ Evidence snippets:
         ]
         if out and out.strip():
             _LOG.warning("synthesis_non_json")
-            return {
+            return _finish({
                 "answer": out.strip(),
                 "provenance": provenance,
                 "confidence": judge_output.get("confidence", 0.3) if isinstance(judge_output, dict) else 0.3,
                 "explain_trace": "synthesis_non_json",
-            }
+            }, "non_json")
     except asyncio.TimeoutError:
         fail_trace = "synthesis_timeout"
         _LOG.exception("synthesis_timeout")
@@ -229,4 +237,9 @@ Evidence snippets:
             # formatted fallback when there was no explicit synthesis failure.
             if fail_trace == "synthesis_unavailable":
                 fallback["explain_trace"] = "synthesis_fallback_formatted"
-    return fallback
+    outcome = "fallback_formatted" if fallback.get("answer") else fail_trace
+    if fail_trace == "synthesis_timeout":
+        outcome = "timeout"
+    elif fail_trace in ("synthesis_error", "synthesis_unavailable"):
+        outcome = "error"
+    return _finish(fallback, outcome)
