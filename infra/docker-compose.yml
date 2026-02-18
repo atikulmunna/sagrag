@@ -52,3 +52,16 @@ services:
       - elastic
       - neo4j
       - redis
+
+  gradio:
+    build:
+      context: ..
+      dockerfile: ui.Dockerfile
+    container_name: sag-gradio
+    environment:
+      - SAG_RAG_API_BASE=http://backend:8000
+      - SAG_RAG_UI_TIMEOUT_S=90
+    ports:
+      - "7860:7860"
+    depends_on:
+      - backend

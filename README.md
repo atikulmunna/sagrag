@@ -100,6 +100,11 @@ flowchart LR
   OUT --> OBS
 ```
 
+<p align="center">
+  <img src="assets/sagrag-demo.png" alt="SAG-RAG Gradio demo" width="760" />
+</p>
+<p align="center"><em>Figure: SAG-RAG Gradio demo with grounded answer, trace, and retrieval diagnostics.</em></p>
+
 What we built
 - End-to-end SAG-RAG pipeline: speculative planning, multi-agent retrieval, re-ranking, graph reasoning, judge, and synthesis with provenance.
 - Local deployment: Docker Compose for the full stack.
@@ -150,6 +155,7 @@ Quickstart (local)
 2) Run the backend container or `uvicorn app.main:app --host 0.0.0.0 --port 8000`
 3) Ingest docs: `POST /v1/ingest`
 4) Query: `POST /v1/query`
+5) Optional Gradio UI: `http://localhost:7860`
 
 Local env
 - Copy `.env.example` to `.env` and fill in values.
@@ -158,6 +164,8 @@ Config (env vars)
 - `OLLAMA_URL`, `OLLAMA_MODEL`
 - `QDRANT_URL`, `ELASTIC_URL`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`
 - `RETRIEVER_TIMEOUT_S` (per-retriever timeout in seconds; default: 12)
+- `CONFIDENCE_ALIGNMENT_FLOOR` (confidence floor when top evidence alignment is strong; default: 0.55)
+- `CONFIDENCE_ALIGNMENT_TOP_SCORE_MIN` (minimum top rerank score for floor activation; default: -6.0)
 - `GRAPH_ENABLED` (true/false)
 - `DOMAIN_KEYWORDS` (JSON dict of domain -> keyword list)
 - `DOMAIN_MIN_KEYWORD_HITS` (default: 2)
@@ -231,6 +239,11 @@ python tools/ablation_eval.py \
 
 Deployment
 - Docker Compose: `infra/docker-compose.yml`
+- Start backend + Gradio:
+```
+docker compose -f infra/docker-compose.yml up -d backend gradio
+```
+- Gradio calls backend via `SAG_RAG_API_BASE` (default `http://backend:8000`).
 
 Admin UI
 - `GET /ui` (simple dashboard for recent queries and feedback)

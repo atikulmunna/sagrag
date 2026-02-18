@@ -477,6 +477,37 @@ async def query_endpoint(request: Request):
         record_retrieval_failure(tag)
     confidence = synthesis.get("confidence", 0.3) if isinstance(synthesis, dict) else 0.3
     try:
+        confidence = float(confidence)
+    except Exception:
+        confidence = 0.3
+    # Confidence floor calibration for strong evidence alignment.
+    if reranked and author_terms and not author_gap:
+        top = reranked[0]
+        top_score = top.get("rerank_score")
+        if top_score is None:
+            top_score = top.get("score")
+        top_author_hit = _author_matches(top, author_terms)
+        has_severe_failure = any(
+            t in retrieval_failures
+            for t in (
+                "no_results",
+                "vector_timeout",
+                "vector_error",
+                "lexical_timeout",
+                "lexical_error",
+                "structured_timeout",
+                "structured_error",
+                "synthesis_timeout",
+                "synthesis_error",
+            )
+        )
+        try:
+            strong_score = (top_score is not None) and (float(top_score) >= float(settings.confidence_alignment_top_score_min))
+        except Exception:
+            strong_score = False
+        if top_author_hit and strong_score and not has_severe_failure:
+            confidence = max(confidence, float(settings.confidence_alignment_floor))
+    try:
         hallucination_risk = 1.0 - float(confidence)
     except Exception:
         hallucination_risk = 0.7

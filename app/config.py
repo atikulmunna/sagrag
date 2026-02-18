@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     author_index_path: str = "/data/author_index.json"
     min_results_count: int = 3
     min_top_rerank_score: float = -12.0
+    confidence_alignment_floor: float = 0.55
+    confidence_alignment_top_score_min: float = -6.0
 
     class Config:
         # set this to the path of your .env as mounted in the container.
