@@ -42,7 +42,7 @@ services:
     volumes:
       - ../app:/app
       - ../data:/data
-      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ${HF_CACHE_DIR:-./hf_cache}:/root/.cache/huggingface
     ports:
       - "8000:8000"
     extra_hosts:

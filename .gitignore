@@ -11,6 +11,9 @@ __pycache__/
 *.log
 *.sqlite3
 data/
+infra/hf_cache/
 dist/
 build/
+*.egg-info/
+desktop.ini
 .DS_Store
