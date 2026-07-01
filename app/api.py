@@ -135,7 +135,6 @@ def _apply_author_bias(results, query: str, bias: float = 0.8):
         text = (r.get("text") or "").lower()
         file_hit = any(t in source for t in terms)
         text_hit = any(t in text for t in terms)
-        match = file_hit or text_hit
         r2 = dict(r)
         if file_hit:
             r2["author_bias"] = bias

@@ -1,6 +1,5 @@
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
-from store import fetch_audit_logs, fetch_feedback
 
 router = APIRouter()
 

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        # Only the lightweight import/runtime deps are needed for the unit
+        # suite — torch/spacy/qdrant/elasticsearch/neo4j are imported lazily
+        # inside functions and are not exercised here.
+        run: pip install -e ".[test]"
+
+      - name: Lint (ruff)
+        run: |
+          ruff check app tests
+          ruff format --check tests
+
+      - name: Type check (mypy)
+        # Lenient baseline; informational while the codebase is untyped.
+        run: mypy app
+        continue-on-error: true
+
+      - name: Unit tests
+        run: pytest

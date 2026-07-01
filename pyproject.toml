@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sagrag"
+version = "0.1.0"
+description = "Speculative -> Agentic -> Graph RAG backend (FastAPI, Qdrant, Elasticsearch, Neo4j, Ollama)"
+requires-python = ">=3.11"
+readme = "README.md"
+
+# Runtime dependencies are pinned in app/requirements.txt (backend) and
+# ui/requirements.txt (Gradio UI); they are intentionally not duplicated here.
+# This group installs only what the unit test suite needs to import the app
+# modules and run — no torch/spacy/qdrant/elasticsearch/neo4j required, since
+# those are imported lazily inside functions rather than at module load.
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "fastapi",
+    "pydantic>=2",
+    "pydantic-settings",
+    "httpx",
+    "ruff>=0.6",
+    "mypy>=1.8",
+]
+
+# The backend is a set of flat modules under app/ rather than an importable
+# package, so there is nothing for setuptools to build/install. Declaring an
+# empty package set makes `pip install -e ".[test]"` a metadata-only install
+# (deps only); tests import app modules via the pytest pythonpath below.
+[tool.setuptools]
+py-modules = []
+
+[tool.pytest.ini_options]
+# App modules import each other flatly (e.g. `from config import settings`),
+# so `app/` must be on sys.path for tests to import them by bare name.
+pythonpath = ["app"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra -q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Existing app code predates linting; keep the initial gate pragmatic (real
+# errors + basic style) and defer import-sorting (I) / whole-repo formatting to
+# a later cleanup pass rather than churning every module's imports now.
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # line too long — many existing prompt strings exceed the limit
+    "E741",  # ambiguous variable name (l) used in a few loops
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+follow_imports = "silent"
+# Lenient baseline: catch obvious errors without forcing full annotations on
+# the existing untyped codebase. Tighten incrementally.
+check_untyped_defs = false
+warn_unused_ignores = false

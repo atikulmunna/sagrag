@@ -17,7 +17,7 @@ async def plan_query(user_query: str):
 You are a Speculative Query Planner for a RAG system.
 
 User query:
-\"\"\"{user_query}\"\"\" 
+\"\"\"{user_query}\"\"\"
 
 Return JSON with keys:
 {{ "intent": "...", "hypotheses": [...], "queries": [...], "constraints": {{}} }}
