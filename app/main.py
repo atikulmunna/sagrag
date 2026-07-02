@@ -2,7 +2,7 @@
 import json
 import logging
 import time
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from api import router
 from ui import router as ui_router
@@ -65,7 +65,9 @@ async def rate_limit(request: Request, call_next):
     if count is None:
         count = _in_memory_count(key, window)
     if count > limit:
-        raise HTTPException(status_code=429, detail="rate limit exceeded")
+        # Return (don't raise): HTTPException raised inside a BaseHTTPMiddleware
+        # escapes FastAPI's exception handler and surfaces as a 500.
+        return JSONResponse(status_code=429, content={"detail": "rate limit exceeded"})
     return await call_next(request)
 
 @app.middleware("http")
