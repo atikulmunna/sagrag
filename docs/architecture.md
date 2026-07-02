@@ -156,6 +156,12 @@ stack (not committed) — see [`data/eval/README.md`](../data/eval/README.md).
 - **Evaluation scope.** The bundled eval set is small and single-domain (stoicism);
   recall@k and faithfulness numbers are indicative, not benchmark-grade. Expanding
   ground truth across domains is future work.
+- **Tenant isolation scope.** Auth binds the tenant server-side, but storage
+  shards by tenant *and* domain with **domain taking precedence**: no-domain data
+  is isolated per tenant (`docs_{tenant}`), while domain-classified data is shared
+  across tenants (`docs_{domain}`). Strict cross-domain isolation would require
+  composing both into `docs_{tenant}_{domain}` (`_target_names` in `ingestion.py`
+  + collection selection in `agents.py`). This is a deliberate, tested default.
 - **Single-node infra.** Qdrant / Elasticsearch / Neo4j / Redis run single-node via
   Compose. Redis is best-effort (rate limit + cache + queue degrade to in-process
   when it's down); the ingest "queue" is enqueued for observability but the worker

@@ -318,12 +318,21 @@ curl -sS -X POST http://localhost:8000/v1/query \
   -d '{"user_id":"u1","query":"what is virtue?"}'
 ```
 
-**Tenant binding.** Set `TENANT_ISOLATION=true` alongside auth so each key is
-bound to its own tenant namespace. The tenant is taken from the authenticated
-key and enforced **server-side** — a `tenant` field in the request body is
-ignored for authenticated requests, so a caller cannot read or write another
-tenant's data by spoofing it. Without auth, the body `tenant` (falling back to
-`user_id`) is used as before.
+**Tenant binding.** Set `TENANT_ISOLATION=true` alongside auth so the tenant is
+taken from the authenticated key and enforced **server-side** — a `tenant` field
+in the request body is ignored for authenticated requests, so a caller cannot
+override it. Without auth, the body `tenant` (falling back to `user_id`) is used
+as before.
+
+> **Scope of isolation.** Storage is sharded by tenant *and* domain, but **domain
+> sharding takes precedence**: a tenant with **no detected domain** gets its own
+> `docs_{tenant}` namespace, while **domain-classified** data lands in the shared
+> `docs_{domain}` namespace regardless of tenant (see `_target_names` in
+> `ingestion.py` and the collection selection in `agents.py`). So with domain
+> routing enabled, authenticated tenants querying the same domain read the **same**
+> corpus. For strict per-tenant isolation across domains, change the namespace
+> scheme to compose both (e.g. `docs_{tenant}_{domain}`) — this is a deliberate,
+> tested default, not an oversight.
 
 **Secrets handling.** `.env` and `infra/.env` are git-ignored and must never be
 committed — see `.env.example` for the shape (with placeholder values only).
