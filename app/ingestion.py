@@ -57,6 +57,135 @@ def _flatten_csv(text: str, max_lines=500):
         lines.append(" | ".join(pairs))
     return lines
 
+def _target_names(tenant: str | None, domain: str | None):
+    """Derive the (qdrant collection, es index) names for a tenant/domain.
+
+    Note: a domain resets the names off the base (dropping the tenant suffix) —
+    preserved from the original behavior.
+    """
+    base_collection = "docs"
+    base_index = "docs_index"
+    collection = base_collection
+    index = base_index
+    if tenant:
+        collection = f"{collection}_{tenant}"
+        index = f"{index}_{tenant}"
+    if domain:
+        collection = f"{base_collection}_{domain}"
+        index = f"{base_index}_{domain}"
+    return collection, index
+
+
+def _batch_upsert_qdrant(qdrant, collection, points, batch_size):
+    for i in range(0, len(points), batch_size):
+        batch = points[i:i + batch_size]
+        try:
+            qdrant.upsert(collection_name=collection, points=batch)
+        except Exception as e:
+            msg = str(e)
+            if "Collection" in msg and "doesn't exist" in msg:
+                try:
+                    from qdrant_client.http import models as qdrant_models
+                    qdrant.create_collection(
+                        collection_name=collection,
+                        vectors_config=qdrant_models.VectorParams(
+                            size=EMB_DIM, distance=qdrant_models.Distance.COSINE
+                        ),
+                    )
+                    qdrant.upsert(collection_name=collection, points=batch)
+                except Exception as e2:
+                    print(f"qdrant batch upsert failed for {collection}: {e2}")
+            else:
+                print(f"qdrant batch upsert failed for {collection}: {e}")
+
+
+def _batch_index_es(es, actions):
+    if not actions:
+        return
+    try:
+        from elasticsearch import helpers
+        helpers.bulk(es, actions, raise_on_error=False)
+    except Exception as e:
+        print(f"es bulk index failed: {e}")
+
+
+def _qdrant_source_filter(source):
+    from qdrant_client.http import models as qdrant_models
+    return qdrant_models.FilterSelector(
+        filter=qdrant_models.Filter(
+            must=[qdrant_models.FieldCondition(
+                key="source", match=qdrant_models.MatchValue(value=source)
+            )]
+        )
+    )
+
+
+def _delete_source_from_stores(qdrant, es, source, collection, index, graph_enabled):
+    """Delete a source's existing points/docs/graph nodes before re-adding."""
+    try:
+        qdrant.delete(collection_name=collection, points_selector=_qdrant_source_filter(source))
+    except Exception as e:
+        print(f"qdrant delete-by-source failed for {source}: {e}")
+    try:
+        es.delete_by_query(
+            index=index,
+            query={"term": {"source.keyword": source}},
+            ignore_unavailable=True,
+            conflicts="proceed",
+        )
+    except Exception as e:
+        print(f"es delete-by-source failed for {source}: {e}")
+    if graph_enabled:
+        try:
+            from graph import delete_source_from_graph
+            delete_source_from_graph(source)
+        except Exception as e:
+            print(f"graph delete-by-source failed for {source}: {e}")
+
+
+def delete_source(source: str, tenant: str | None = None):
+    """Remove a source from every store (all docs* collections/indices + graph).
+
+    Used by the DELETE endpoint so the corpus supports removals, not just adds.
+    """
+    from qdrant_client import QdrantClient
+    from elasticsearch import Elasticsearch
+    qdrant = QdrantClient(url=settings.qdrant_url)
+    es = Elasticsearch(settings.elastic_url)
+    deleted = {"source": source, "qdrant_collections": [], "es": False, "graph": False}
+    try:
+        for c in qdrant.get_collections().collections:
+            name = getattr(c, "name", None)
+            if not name or not name.startswith("docs"):
+                continue
+            try:
+                qdrant.delete(collection_name=name, points_selector=_qdrant_source_filter(source))
+                deleted["qdrant_collections"].append(name)
+            except Exception as e:
+                print(f"qdrant delete failed for {name}: {e}")
+    except Exception as e:
+        print(f"qdrant list collections failed: {e}")
+    try:
+        es.delete_by_query(
+            index="docs_index*",
+            query={"term": {"source.keyword": source}},
+            ignore_unavailable=True,
+            allow_no_indices=True,
+            conflicts="proceed",
+        )
+        deleted["es"] = True
+    except Exception as e:
+        print(f"es delete-by-source failed for {source}: {e}")
+    if settings.graph_enabled:
+        try:
+            from graph import delete_source_from_graph
+            delete_source_from_graph(source)
+            deleted["graph"] = True
+        except Exception as e:
+            print(f"graph delete-by-source failed for {source}: {e}")
+    return deleted
+
+
 def ingest_folder(folder_path: str = "/data/docs", tenant: str | None = None):
     from sentence_transformers import SentenceTransformer
     from qdrant_client import QdrantClient
@@ -66,8 +195,6 @@ def ingest_folder(folder_path: str = "/data/docs", tenant: str | None = None):
     es = Elasticsearch(settings.elastic_url)
     graph_enabled = settings.graph_enabled
 
-    base_collection = "docs"
-    base_index = "docs_index"
     created = set()
 
     def _ensure_collection(name):
@@ -104,6 +231,7 @@ def ingest_folder(folder_path: str = "/data/docs", tenant: str | None = None):
 
     idx = 0
     sources = []
+    batch_size = max(1, int(settings.ingest_batch_size))
     root = Path(folder_path)
     for p in root.glob("**/*"):
         if not p.is_file():
@@ -116,14 +244,7 @@ def ingest_folder(folder_path: str = "/data/docs", tenant: str | None = None):
                 domain = p.parent.name.lower()
         except Exception:
             domain = None
-        collection = base_collection
-        index = base_index
-        if tenant:
-            collection = f"{collection}_{tenant}"
-            index = f"{index}_{tenant}"
-        if domain:
-            collection = f"{base_collection}_{domain}"
-            index = f"{base_index}_{domain}"
+        collection, index = _target_names(tenant, domain)
         _ensure_collection(collection)
         _ensure_index(index)
         mtime = p.stat().st_mtime
@@ -133,18 +254,26 @@ def ingest_folder(folder_path: str = "/data/docs", tenant: str | None = None):
         if source_type == "json":
             try:
                 data = json.loads(raw_text)
-                lines = _flatten_json(data)
-                text = "\n".join(lines)
+                text = "\n".join(_flatten_json(data))
             except Exception:
                 text = raw_text
         if source_type == "csv":
             try:
-                lines = _flatten_csv(raw_text)
-                text = "\n".join(lines)
+                text = "\n".join(_flatten_csv(raw_text))
             except Exception:
                 text = raw_text
         chunks = chunk_text(text)
+        if not chunks:
+            continue
         embeddings = model.encode([c[0] for c in chunks])
+
+        # Re-ingest replaces the source: drop its existing points/docs/graph
+        # first so the store stops being append-only.
+        if settings.reingest_replaces_source:
+            _delete_source_from_stores(qdrant, es, str(p.name), collection, index, graph_enabled)
+
+        points = []
+        es_actions = []
         for j, (chunk, start, end) in enumerate(chunks):
             point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{p.name}:{j}"))
             payload = {
@@ -156,36 +285,8 @@ def ingest_folder(folder_path: str = "/data/docs", tenant: str | None = None):
                 "offset_start": start,
                 "offset_end": end,
             }
-            point = {"id": point_id, "vector": embeddings[j].tolist(), "payload": payload}
-            try:
-                qdrant.upsert(collection_name=collection, points=[point])
-            except Exception as e:
-                # If collection is missing, create and retry once.
-                msg = str(e)
-                if "Collection" in msg and "doesn't exist" in msg:
-                    try:
-                        _ensure_collection(collection)
-                        qdrant.upsert(collection_name=collection, points=[point])
-                    except Exception as e2:
-                        print(f"qdrant upsert failed for {point['id']}: {e2}")
-                else:
-                    print(f"qdrant upsert failed for {point['id']}: {e}")
-            try:
-                es.index(
-                    index=index,
-                    id=point["id"],
-                    document={
-                        "text": chunk,
-                        "source": str(p.name),
-                        "timestamp": mtime,
-                        "source_type": source_type,
-                        "domain": domain,
-                        "offset_start": start,
-                        "offset_end": end,
-                    },
-                )
-            except Exception as e:
-                print(f"es index failed for {point['id']}: {e}")
+            points.append({"id": point_id, "vector": embeddings[j].tolist(), "payload": payload})
+            es_actions.append({"_index": index, "_id": point_id, "_source": dict(payload)})
             if graph_enabled:
                 try:
                     from utils import extract_entities, extract_relations
@@ -193,10 +294,14 @@ def ingest_folder(folder_path: str = "/data/docs", tenant: str | None = None):
                     entities = extract_entities(chunk)
                     relations = extract_relations(chunk)
                     if entities:
-                        add_chunk_entities_claims(point["id"], chunk, entities, relations=relations)
+                        add_chunk_entities_claims(point_id, chunk, entities, relations=relations, source=str(p.name))
                 except Exception as e:
-                    print(f"graph ingest failed for {point['id']}: {e}")
+                    print(f"graph ingest failed for {point_id}: {e}")
             idx += 1
+
+        # Batched writes: one upsert per batch, one bulk request per file.
+        _batch_upsert_qdrant(qdrant, collection, points, batch_size)
+        _batch_index_es(es, es_actions)
         sources.append(str(p.name))
     author_index = {}
     author_terms = set()

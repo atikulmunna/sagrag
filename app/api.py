@@ -1,13 +1,15 @@
 # app/api.py
 from fastapi import APIRouter, Request, HTTPException, Response
 from fastapi.responses import StreamingResponse
+import asyncio
 import hashlib
 import json
 import os
 import re
 import redis_client
 import domain_packs
-from ingestion import ingest_folder
+import ingest_jobs
+from ingestion import ingest_folder, delete_source
 from speculative import plan_query
 from agents import run_agents, route_domain, apply_policy_filter, apply_freshness_filter, apply_policy_rules, author_lexical_search
 from reranker import rerank
@@ -192,7 +194,9 @@ def _author_matches(result: dict, author_terms: list[str]) -> bool:
 
 @router.post("/ingest")
 async def ingest_endpoint(request: Request):
-    # NOTE: uses folder path inside container
+    # NOTE: uses folder path inside container.
+    # Ingestion is heavy; run it as a background job (off the event loop) and
+    # return a job id immediately. Poll GET /ingest/{job_id} for status.
     tenant = None
     try:
         body = await request.json()
@@ -202,7 +206,33 @@ async def ingest_endpoint(request: Request):
         tenant = None
     if settings.tenant_isolation:
         tenant = tenant or "default"
-    res = ingest_folder("/data/docs", tenant=tenant)
+    job_id = ingest_jobs.create_job("ingest", meta={"tenant": tenant, "folder": "/data/docs"})
+    # Best-effort enqueue for observability / a future distributed worker.
+    await redis_client.enqueue_json(
+        settings.ingest_queue_name, {"job_id": job_id, "tenant": tenant, "folder": "/data/docs"}
+    )
+    asyncio.create_task(ingest_jobs.run_job(job_id, ingest_folder, "/data/docs", tenant))
+    return {"status": "accepted", "job_id": job_id}
+
+@router.get("/ingest/{job_id}")
+async def ingest_status_endpoint(job_id: str):
+    job = ingest_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+@router.delete("/ingest/source/{source}")
+async def delete_source_endpoint(source: str, request: Request):
+    tenant = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            tenant = body.get("tenant")
+    except Exception:
+        tenant = None
+    if settings.tenant_isolation:
+        tenant = tenant or "default"
+    res = await asyncio.to_thread(delete_source, source, tenant)
     return {"status": "ok", **res}
 
 async def _retrieve_and_judge(query, prefs, tenant):

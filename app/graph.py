@@ -46,19 +46,22 @@ def add_chunk_and_entities(chunk_id: str, text: str, entities: list):
     with driver.session() as session:
         session.execute_write(lambda tx: _work(tx))
 
-def add_chunk_entities_claims(chunk_id: str, text: str, entities: list, relations: list | None = None):
+def add_chunk_entities_claims(chunk_id: str, text: str, entities: list, relations: list | None = None, source: str | None = None):
     claims = _split_sentences(text, settings.graph_max_claims)
     claim_meta = []
     if relations is None:
         relations = _extract_relations_fallback(text, entities)
     def _work(tx):
-        tx.run("MERGE (c:Chunk {id:$id}) SET c.text=$text", id=chunk_id, text=text)
-        for ent in entities:
-            tx.run("MERGE (e:Entity {name:$name})", name=ent)
+        tx.run("MERGE (c:Chunk {id:$id}) SET c.text=$text, c.source=$source", id=chunk_id, text=text, source=source)
+        # Batch entity creation + MENTIONS with UNWIND to cut round-trips.
+        if entities:
+            tx.run("UNWIND $names AS name MERGE (e:Entity {name:name})", names=entities)
             tx.run("""
-                MATCH (c:Chunk {id:$cid}), (e:Entity {name:$name})
+                MATCH (c:Chunk {id:$cid})
+                UNWIND $names AS name
+                MATCH (e:Entity {name:name})
                 MERGE (c)-[:MENTIONS]->(e)
-            """, cid=chunk_id, name=ent)
+            """, cid=chunk_id, names=entities)
         for idx, claim in enumerate(claims):
             claim_id = f"{chunk_id}::claim::{idx}"
             tx.run("MERGE (cl:Claim {id:$id}) SET cl.text=$text", id=claim_id, text=claim)
@@ -175,6 +178,17 @@ def _add_contradictions(session, claim_meta, entities):
             if _negate(old_text) != new_neg:
                 print(f"[graph] CONTRADICTS {new_id} -> {r.get('id')}")
                 session.execute_write(lambda tx: _relate(tx, new_id, r.get("id")))
+
+def delete_source_from_graph(source: str):
+    """Delete a source's Chunk nodes and their per-chunk Claims. Shared Entity
+    nodes are left in place (harmless orphans)."""
+    q = """
+    MATCH (c:Chunk {source:$source})
+    OPTIONAL MATCH (c)-[:SUPPORTS]->(cl:Claim)
+    DETACH DELETE c, cl
+    """
+    with driver.session() as session:
+        session.execute_write(lambda tx: tx.run(q, source=source))
 
 def support_density_for_entities(entity_names: list):
     q = """

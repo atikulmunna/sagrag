@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     query_cache_ttl_s: int = 300
     embed_cache_ttl_s: int = 86400
     ingest_queue_name: str = "sagrag:ingest:jobs"
+
+    # Ingestion lifecycle
+    ingest_batch_size: int = 128
+    # Re-ingesting a file deletes its existing points/docs/graph first, so the
+    # store stops being append-only (no duplicate chunks on re-ingest).
+    reingest_replaces_source: bool = True
     tenant_isolation: bool = False
     learning_export_path: str = "/data/learning/train.jsonl"
     learning_min_rating: int = 4
