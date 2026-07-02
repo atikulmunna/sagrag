@@ -1,0 +1,110 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "schemaVersion": 39,
+  "tags": ["sag-rag"],
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "",
+  "title": "SAG-RAG Overview",
+  "uid": "sagrag-overview",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate (req/s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+          "expr": "sum(rate(sag_rag_requests_total[5m])) by (path)",
+          "legendFormat": "{{path}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Request latency p95 (ms)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(sag_rag_request_latency_ms_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Retrieval failures by tag (per s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+          "expr": "sum(rate(sag_rag_retrieval_failures_total[5m])) by (tag)",
+          "legendFormat": "{{tag}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Synthesis outcomes (per s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+          "expr": "sum(rate(sag_rag_synthesis_total[5m])) by (outcome)",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Synthesis latency p95 (ms)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(sag_rag_synthesis_latency_ms_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Hallucination risk (bucket counts)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "sagrag-prometheus" },
+          "expr": "sag_rag_hallucination_risk_bucket",
+          "legendFormat": "le={{le}}"
+        }
+      ]
+    }
+  ]
+}

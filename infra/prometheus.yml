@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # SAG-RAG backend exposes custom text metrics at /metrics (rate-limit exempt).
+  - job_name: sag-rag-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]
+
+  # OpenTelemetry collector's own telemetry.
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]

@@ -263,3 +263,29 @@ Comparison (SAG-RAG vs other RAG approaches)
 | Rerank-only pipelines | Higher relevance | Still lacks reasoning/verification | Adds explicit judge and contradiction handling |
 | Graph-RAG (basic entity graph) | Improved explainability | Shallow reasoning | Adds claims, contradictions, relation paths, and evidence scoring |
 | Toolformer-style agentic RAG | Flexible tool use | Hard to audit; noisy | Explicit planning + retrieval envelopes + audit logs |
+
+## Observability
+
+The backend exposes Prometheus text metrics at `/metrics` (and `/v1/metrics`),
+including request latency histograms, `sag_rag_retrieval_failures_total`,
+`sag_rag_synthesis_total` + latency, `sag_rag_hallucination_risk_bucket`, and
+`sag_rag_evidence_coverage_bucket`.
+
+An opt-in observability stack (Prometheus + Grafana + OpenTelemetry collector)
+ships behind a Compose profile so the core stack stays light:
+
+```bash
+cd infra
+docker compose --profile observability up
+```
+
+- **Prometheus** — http://localhost:9090 (scrapes `backend:8000/metrics`).
+- **Grafana** — http://localhost:3000 (anonymous viewer enabled; admin/admin).
+  A provisioned "SAG-RAG Overview" dashboard renders request rate/latency,
+  retrieval failures, synthesis outcomes/latency p95, and hallucination risk.
+- **OTel collector** — receives OTLP traces on `4317`/`4318`. Set `OTEL_ENABLED=true`
+  (and `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317`) so the backend
+  exports spans; the collector logs them (add a Jaeger/Tempo exporter to visualize).
+
+Config lives in `infra/prometheus.yml`, `infra/otel-collector.yaml`, and
+`infra/grafana/`.
