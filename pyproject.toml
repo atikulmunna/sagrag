@@ -36,7 +36,7 @@ py-modules = []
 [tool.pytest.ini_options]
 # App modules import each other flatly (e.g. `from config import settings`),
 # so `app/` must be on sys.path for tests to import them by bare name.
-pythonpath = ["app"]
+pythonpath = ["app", "tools"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-ra -q"

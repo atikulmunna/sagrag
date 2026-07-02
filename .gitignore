@@ -10,7 +10,8 @@ __pycache__/
 .ruff_cache/
 *.log
 *.sqlite3
-data/
+data/*
+!data/eval/
 infra/hf_cache/
 dist/
 build/
