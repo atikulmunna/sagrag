@@ -46,7 +46,7 @@ Evidence snippets:
 """
     try:
         out = await asyncio.wait_for(
-            llm.completion(prompt, max_tokens=settings.judge_max_tokens),
+            llm.completion(prompt, max_tokens=settings.judge_max_tokens, format="json", temperature=0),
             timeout=settings.judge_timeout_s,
         )
         parsed = _safe_json_extract(out)

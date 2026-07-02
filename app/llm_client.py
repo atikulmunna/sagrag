@@ -28,19 +28,35 @@ class OllamaREST:
         self.model = settings.ollama_model
         self._sema = asyncio.Semaphore(settings.llm_max_concurrent)
 
-    async def completion(self, prompt: str, max_tokens: int = 512) -> str:
+    async def completion(
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        format: str | dict | None = None,
+        temperature: float | None = None,
+    ) -> str:
         span_cm = _TRACER.start_as_current_span("llm.completion") if _TRACER else contextlib.nullcontext()
         with span_cm as span:
             if span:
                 span.set_attribute("llm.model", self.model)
                 span.set_attribute("llm.max_tokens", max_tokens)
                 span.set_attribute("llm.provider", "ollama")
-            payload = {
+                if format is not None:
+                    span.set_attribute("llm.format", "json" if isinstance(format, str) else "schema")
+                if temperature is not None:
+                    span.set_attribute("llm.temperature", temperature)
+            options: dict = {"num_predict": max_tokens}
+            if temperature is not None:
+                options["temperature"] = temperature
+            payload: dict = {
                 "model": self.model,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"num_predict": max_tokens}
+                "options": options,
             }
+            # Ollama structured-output: "json" forces valid JSON; a dict is a JSON schema.
+            if format is not None:
+                payload["format"] = format
             attempt = 0
             while True:
                 attempt += 1
@@ -66,8 +82,16 @@ class LLMClient:
         self._embed_model = None
 
     # GENERATION
-    async def completion(self, prompt: str, max_tokens: int = 512) -> str:
-        return await self.gen.completion(prompt, max_tokens=max_tokens)
+    async def completion(
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        format: str | dict | None = None,
+        temperature: float | None = None,
+    ) -> str:
+        return await self.gen.completion(
+            prompt, max_tokens=max_tokens, format=format, temperature=temperature
+        )
 
     # EMBEDDINGS (local)
     async def embed(self, text: str):

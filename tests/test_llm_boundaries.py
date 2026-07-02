@@ -34,6 +34,14 @@ async def test_plan_query_falls_back_on_error(monkeypatch):
     assert plan["queries"]
 
 
+async def test_plan_query_requests_structured_output(monkeypatch):
+    fake = FakeLLM(responses=['{"intent": "lookup", "queries": ["q1"]}'])
+    monkeypatch.setattr(speculative.llm, "completion", fake.completion)
+    await speculative.plan_query("some query")
+    assert fake.calls[0]["format"] == "json"
+    assert fake.calls[0]["temperature"] == 0
+
+
 # --- judge.judge_evidence ---------------------------------------------------
 
 
@@ -62,6 +70,14 @@ async def test_judge_error_fallback(monkeypatch):
     out = await judge.judge_evidence("q", [{"id": "a", "text": "x"}], [], None, None)
     assert out["confidence"] == 0.3
     assert out["notes"] == "judge_error_fallback"
+
+
+async def test_judge_requests_structured_output(monkeypatch):
+    fake = FakeLLM(responses=['{"confidence": 0.7, "trusted_ids": ["a"], "notes": "ok"}'])
+    monkeypatch.setattr(judge.llm, "completion", fake.completion)
+    await judge.judge_evidence("q", [{"id": "a", "text": "x"}], [], None, None)
+    assert fake.calls[0]["format"] == "json"
+    assert fake.calls[0]["temperature"] == 0
 
 
 # --- synthesis.synthesize_answer --------------------------------------------
@@ -97,6 +113,38 @@ async def test_synthesize_success(monkeypatch):
     assert out["confidence"] == 0.6
     assert len(out["provenance"]) == 1
     assert out["provenance"][0]["id"] == "a"
+
+
+async def test_synthesize_requests_structured_output(monkeypatch):
+    answer = (
+        "Seneca argues that fear is largely imagined and that reason dissolves it, "
+        "so we should question our fears calmly."
+    )
+    fake = FakeLLM(
+        responses=[
+            '{"answer": "'
+            + answer
+            + '", "provenance": [{"id": "a"}], "confidence": 0.6, "explain_trace": "ok"}'
+        ]
+    )
+    monkeypatch.setattr(synthesis.llm, "completion", fake.completion)
+    await synthesis.synthesize_answer("q", _EVIDENCE, {"confidence": 0.6, "trusted_ids": ["a"]})
+    # The main synthesis call requests JSON with deterministic temperature.
+    assert fake.calls[0]["format"] == "json"
+    assert fake.calls[0]["temperature"] == 0
+
+
+async def test_naturalizer_stays_free_text(monkeypatch):
+    # Non-JSON model output forces the naturalizer path; that call must NOT
+    # request JSON format (it produces plain prose).
+    fake = FakeLLM(responses=["this is plain prose, not json, about fear and reason and calm."])
+    monkeypatch.setattr(synthesis.llm, "completion", fake.completion)
+    await synthesis.synthesize_answer("q", _EVIDENCE, {"confidence": 0.3, "trusted_ids": ["a"]})
+    # First call is the structured synthesis attempt; a later naturalizer call
+    # (if any) is free-text.
+    assert fake.calls[0]["format"] == "json"
+    naturalizer_calls = [c for c in fake.calls[1:]]
+    assert all(c.get("format") is None for c in naturalizer_calls)
 
 
 async def test_synthesize_timeout_falls_back(monkeypatch):

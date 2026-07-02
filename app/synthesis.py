@@ -223,7 +223,7 @@ Evidence snippets:
     fail_trace = "synthesis_unavailable"
     try:
         out = await asyncio.wait_for(
-            llm.completion(prompt, max_tokens=settings.synthesis_max_tokens),
+            llm.completion(prompt, max_tokens=settings.synthesis_max_tokens, format="json", temperature=0),
             timeout=settings.synthesis_timeout_s,
         )
         parsed = _safe_json_extract(out)

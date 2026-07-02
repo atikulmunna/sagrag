@@ -23,7 +23,7 @@ Return JSON with keys:
 {{ "intent": "...", "hypotheses": [...], "queries": [...], "constraints": {{}} }}
 """
     try:
-        out = await llm.completion(prompt, max_tokens=300)
+        out = await llm.completion(prompt, max_tokens=300, format="json", temperature=0)
         parsed = _safe_json_extract(out)
         if parsed:
             return parsed
