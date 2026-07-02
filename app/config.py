@@ -44,6 +44,18 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60
     llm_max_concurrent: int = 2
 
+    # API-key auth (opt-in; default off so local/dev flows work without a key).
+    # When enabled, every endpoint except /health and /metrics requires a valid
+    # `x-api-key` header. Keys come from api_keys (comma-separated; each key's
+    # tenant defaults to the key itself) and/or api_key_map (explicit key ->
+    # tenant). Never commit real keys — supply them via env / a secret store.
+    # Enable tenant_isolation alongside to bind each key to its own tenant
+    # namespace, enforced server-side (a body-supplied tenant is then ignored
+    # for authenticated requests).
+    auth_enabled: bool = False
+    api_keys: str = ""
+    api_key_map: dict[str, str] = {}
+
     # Redis (all best-effort: every feature degrades gracefully if Redis is
     # unreachable). Empty redis_url disables Redis entirely.
     redis_url: str = "redis://redis:6379/0"

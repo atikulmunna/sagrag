@@ -58,6 +58,18 @@ def _query_cache_key(query, prefs, tenant) -> str:
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     return f"sagrag:query:{digest}"
 
+def _resolve_tenant(request, body):
+    """Tenant for a request. When the request is authenticated, the key's
+    tenant (set on request.state by the auth middleware) is authoritative and
+    any body-supplied tenant is ignored — this is the server-side isolation
+    boundary. Otherwise fall back to the body tenant."""
+    auth_tenant = getattr(getattr(request, "state", None), "tenant", None)
+    if auth_tenant is not None:
+        return auth_tenant
+    if isinstance(body, dict):
+        return body.get("tenant")
+    return None
+
 def _merged_term_synonyms() -> dict[str, list[str]]:
     merged = domain_packs.term_synonyms()
     extra = settings.query_term_synonyms or {}
@@ -200,12 +212,10 @@ async def ingest_endpoint(request: Request):
     tenant = None
     try:
         body = await request.json()
-        if isinstance(body, dict):
-            tenant = body.get("tenant")
     except Exception:
-        tenant = None
+        body = None
     if settings.tenant_isolation:
-        tenant = tenant or "default"
+        tenant = _resolve_tenant(request, body) or "default"
     job_id = ingest_jobs.create_job("ingest", meta={"tenant": tenant, "folder": "/data/docs"})
     # Best-effort enqueue for observability / a future distributed worker.
     await redis_client.enqueue_json(
@@ -226,12 +236,10 @@ async def delete_source_endpoint(source: str, request: Request):
     tenant = None
     try:
         body = await request.json()
-        if isinstance(body, dict):
-            tenant = body.get("tenant")
     except Exception:
-        tenant = None
+        body = None
     if settings.tenant_isolation:
-        tenant = tenant or "default"
+        tenant = _resolve_tenant(request, body) or "default"
     res = await asyncio.to_thread(delete_source, source, tenant)
     return {"status": "ok", **res}
 
@@ -498,8 +506,7 @@ async def query_endpoint(request: Request):
         prefs = {}
     tenant = None
     if settings.tenant_isolation:
-        tenant = body.get("tenant") if isinstance(body, dict) else None
-        tenant = tenant or user_id
+        tenant = _resolve_tenant(request, body) or user_id
     # Best-effort response cache: identical query+prefs+tenant+policy short-
     # circuits the whole pipeline. Never fatal — misses/errors just recompute.
     cache_key = _query_cache_key(query, prefs, tenant) if settings.redis_cache_enabled else None
@@ -713,8 +720,7 @@ async def query_stream_endpoint(request: Request):
         prefs = {}
     tenant = None
     if settings.tenant_isolation:
-        tenant = body.get("tenant") if isinstance(body, dict) else None
-        tenant = tenant or user_id
+        tenant = _resolve_tenant(request, body) or user_id
 
     ctx = await _retrieve_and_judge(query, prefs, tenant)
     reranked = ctx["reranked"]

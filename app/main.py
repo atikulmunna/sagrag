@@ -3,12 +3,14 @@ import json
 import logging
 import time
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
 from api import router
 from ui import router as ui_router
 from metrics import record_request
 from otel import setup_tracing
 from config import settings
 import redis_client
+import security
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sag_rag")
@@ -19,6 +21,18 @@ app.include_router(router)
 app.include_router(ui_router)
 
 setup_tracing(app)
+
+@app.middleware("http")
+async def authenticate(request: Request, call_next):
+    """API-key gate. No-op unless settings.auth_enabled. Exempt paths (health,
+    metrics, OpenAPI docs) are always open. On success, binds the key's tenant
+    to request.state so endpoints can enforce tenant isolation server-side."""
+    if settings.auth_enabled and not security.is_exempt(request.url.path):
+        tenant = security.authenticate(request.headers.get(security.API_KEY_HEADER))
+        if tenant is None:
+            return JSONResponse(status_code=401, content={"detail": "invalid or missing api key"})
+        request.state.tenant = tenant
+    return await call_next(request)
 
 _rate_state = {}
 

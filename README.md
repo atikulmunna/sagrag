@@ -289,3 +289,40 @@ docker compose --profile observability up
 
 Config lives in `infra/prometheus.yml`, `infra/otel-collector.yaml`, and
 `infra/grafana/`.
+
+## Security (API-key auth + tenants)
+
+Auth is **opt-in** so local development works with no key. To lock the API down
+for a non-localhost deployment, set in your `.env`:
+
+```bash
+AUTH_ENABLED=true
+# comma-separated keys; each key's tenant defaults to the key string itself
+API_KEYS=prod-key-abc,prod-key-def
+# optional explicit key -> tenant map (JSON); overrides the API_KEYS default
+API_KEY_MAP={"prod-key-abc":"acme","prod-key-def":"globex"}
+```
+
+When enabled, every endpoint requires an `x-api-key` header **except** `/health`
+and `/metrics` (so liveness checks and Prometheus scraping keep working), plus
+the OpenAPI docs (`/docs`, `/redoc`, `/openapi.json`). Missing or unknown keys
+get `401`.
+
+```bash
+curl -sS -X POST http://localhost:8000/v1/query \
+  -H 'x-api-key: prod-key-abc' -H 'content-type: application/json' \
+  -d '{"user_id":"u1","query":"what is virtue?"}'
+```
+
+**Tenant binding.** Set `TENANT_ISOLATION=true` alongside auth so each key is
+bound to its own tenant namespace. The tenant is taken from the authenticated
+key and enforced **server-side** — a `tenant` field in the request body is
+ignored for authenticated requests, so a caller cannot read or write another
+tenant's data by spoofing it. Without auth, the body `tenant` (falling back to
+`user_id`) is used as before.
+
+**Secrets handling.** `.env` and `infra/.env` are git-ignored and must never be
+committed — see `.env.example` for the shape (with placeholder values only).
+Provide real keys via the environment or a secret store; for Compose, prefer
+[Docker secrets](https://docs.docker.com/engine/swarm/secrets/) or an injected
+env file over baking values into images.
