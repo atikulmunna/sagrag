@@ -9,6 +9,27 @@ def test_parse_blocklist_variants():
     assert api._parse_blocklist(None) == []
 
 
+def test_query_cache_key_stable_and_order_independent():
+    # Same inputs (prefs dict order aside) → same key.
+    k1 = api._query_cache_key("Fear and how to handle it", {"a": 1, "b": 2}, "t1")
+    k2 = api._query_cache_key("  fear   AND how to Handle it ", {"b": 2, "a": 1}, "t1")
+    assert k1 == k2
+    assert k1.startswith("sagrag:query:")
+
+
+def test_query_cache_key_varies_with_inputs():
+    base = api._query_cache_key("q", {}, None)
+    assert base != api._query_cache_key("different", {}, None)
+    assert base != api._query_cache_key("q", {"freshness_days": 7}, None)
+    assert base != api._query_cache_key("q", {}, "tenant-a")
+
+
+def test_policy_signature_changes_with_policy(monkeypatch):
+    before = api._policy_signature()
+    monkeypatch.setattr(api.settings, "policy_blocklist", "spam.txt")
+    assert api._policy_signature() != before
+
+
 def test_merged_term_synonyms_merges_config(monkeypatch):
     monkeypatch.setattr(api.settings, "query_term_synonyms", {"grief": ["sorrow"]})
     merged = api._merged_term_synonyms()

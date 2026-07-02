@@ -1,8 +1,10 @@
 # app/api.py
 from fastapi import APIRouter, Request, HTTPException, Response
+import hashlib
 import json
 import os
 import re
+import redis_client
 from ingestion import ingest_folder
 from speculative import plan_query
 from agents import run_agents, route_domain, apply_policy_filter, apply_freshness_filter, apply_policy_rules, author_lexical_search
@@ -40,6 +42,33 @@ _TERM_SYNONYMS = {
     "fear": ["fear", "fears", "afraid", "anxiety", "anxious", "terror", "dread", "timor", "metus"],
     "death": ["death", "die", "dying", "mortality", "mors"],
 }
+
+def _policy_signature() -> str:
+    """Stable signature of the config-level policy so cached answers are
+    invalidated when policy settings change."""
+    parts = [
+        settings.policy_blocklist,
+        settings.policy_allowlist,
+        settings.policy_source_types_allow,
+        settings.policy_source_types_block,
+        settings.policy_domains_allow,
+        settings.policy_domains_block,
+        settings.policy_rules,
+        settings.default_freshness_days,
+    ]
+    return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+
+def _query_cache_key(query, prefs, tenant) -> str:
+    """Cache key over the inputs that determine a query's answer: normalized
+    query text, per-request preferences, tenant, and the policy signature."""
+    payload = {
+        "q": " ".join((query or "").lower().split()),
+        "prefs": prefs or {},
+        "tenant": tenant,
+        "policy": _policy_signature(),
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return f"sagrag:query:{digest}"
 
 def _merged_term_synonyms() -> dict[str, list[str]]:
     merged = dict(_TERM_SYNONYMS)
@@ -183,9 +212,36 @@ async def query_endpoint(request: Request):
         raise HTTPException(status_code=422, detail="body must contain 'user_id' and 'query'")
     user_id = body["user_id"]
     query = body["query"]
+    prefs = body.get("preferences") if isinstance(body, dict) else {}
+    if not isinstance(prefs, dict):
+        prefs = {}
+    tenant = None
+    if settings.tenant_isolation:
+        tenant = body.get("tenant") if isinstance(body, dict) else None
+        tenant = tenant or user_id
+    # Best-effort response cache: identical query+prefs+tenant+policy short-
+    # circuits the whole pipeline. Never fatal — misses/errors just recompute.
+    cache_key = _query_cache_key(query, prefs, tenant) if settings.redis_cache_enabled else None
+    if cache_key is not None:
+        cached = await redis_client.cache_get_json(cache_key)
+        if isinstance(cached, dict):
+            cached["cache"] = "hit"
+            # Echo the current caller (key is shared across users), and still
+            # audit the hit so the trail stays complete.
+            cached["user_id"] = user_id
+            log_query_result(
+                user_id=user_id,
+                query=query,
+                intent=cached.get("intent"),
+                answer=cached.get("answer", ""),
+                provenance=cached.get("provenance", []),
+                confidence=cached.get("confidence"),
+                domain=cached.get("domain") or "domain_unknown",
+                domain_source=cached.get("domain_source"),
+            )
+            return cached
     plan = await plan_query(query)
     constraints = plan.get("constraints", {}) if isinstance(plan, dict) else {}
-    prefs = body.get("preferences") if isinstance(body, dict) else {}
     freshness_days = None
     if isinstance(prefs, dict):
         freshness_days = prefs.get("freshness_days")
@@ -238,10 +294,6 @@ async def query_endpoint(request: Request):
     queries = [str(q) for q in queries_raw if q is not None and str(q).strip()]
     if not queries:
         queries = [str(query)]
-    tenant = None
-    if settings.tenant_isolation:
-        tenant = body.get("tenant") if isinstance(body, dict) else None
-        tenant = tenant or user_id
     raw_results, agent_diagnostics = await run_agents(queries, domain=domain, fallback_domains=fallback_domains, tenant=tenant)
     counts_raw = {}
     for r in raw_results:
@@ -562,6 +614,9 @@ async def query_endpoint(request: Request):
         domain=domain or "domain_unknown",
         domain_source=domain_source,
     )
+    if cache_key is not None:
+        response["cache"] = "miss"
+        await redis_client.cache_set_json(cache_key, response, settings.query_cache_ttl_s)
     return response
 
 @router.get("/audit")

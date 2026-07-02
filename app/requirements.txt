@@ -7,6 +7,7 @@ pydantic-settings
 httpx
 aiohttp
 requests
+redis>=5
 qdrant-client
 neo4j
 elasticsearch==8.12.0

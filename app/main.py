@@ -8,6 +8,7 @@ from ui import router as ui_router
 from metrics import record_request
 from otel import setup_tracing
 from config import settings
+import redis_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sag_rag")
@@ -21,6 +22,17 @@ setup_tracing(app)
 
 _rate_state = {}
 
+def _in_memory_count(key: str, window: int) -> int:
+    """Fixed-window counter in process memory (single-worker fallback)."""
+    bucket = _rate_state.setdefault(window, {})
+    count = bucket.get(key, 0) + 1
+    bucket[key] = count
+    # prune older windows
+    for ts in list(_rate_state.keys()):
+        if ts < window:
+            _rate_state.pop(ts, None)
+    return count
+
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
     if request.url.path in ["/health", "/metrics", "/v1/metrics"]:
@@ -31,13 +43,13 @@ async def rate_limit(request: Request, call_next):
     key = request.headers.get("x-forwarded-for") or request.client.host
     now = int(time.time())
     window = now - (now % 60)
-    bucket = _rate_state.setdefault(window, {})
-    count = bucket.get(key, 0) + 1
-    bucket[key] = count
-    # prune older windows
-    for ts in list(_rate_state.keys()):
-        if ts < window:
-            _rate_state.pop(ts, None)
+    # Prefer a shared Redis counter so the limit holds across workers/replicas;
+    # fall back to the in-process counter if Redis is disabled/unreachable.
+    count = None
+    if settings.redis_rate_limit_enabled:
+        count = await redis_client.incr_fixed_window(f"sagrag:rl:{window}:{key}", 60)
+    if count is None:
+        count = _in_memory_count(key, window)
     if count > limit:
         raise HTTPException(status_code=429, detail="rate limit exceeded")
     return await call_next(request)

@@ -1,11 +1,13 @@
 # app/llm_client.py
 import asyncio
+import hashlib
 import random
 import contextlib
 from typing import List
 import httpx
 
 from config import settings
+import redis_client
 try:
     from opentelemetry import trace
     _TRACER = trace.get_tracer(__name__)
@@ -95,13 +97,26 @@ class LLMClient:
 
     # EMBEDDINGS (local)
     async def embed(self, text: str):
+        # Best-effort cache keyed by (model, text) so repeated queries skip the
+        # encode; falls through to compute when Redis is disabled/unreachable.
+        cache_key = None
+        if settings.redis_cache_enabled:
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            cache_key = f"sagrag:embed:{settings.embedding_model_name}:{digest}"
+            cached = await redis_client.cache_get_json(cache_key)
+            if isinstance(cached, list):
+                return cached
+
         # run embedding in thread pool because sentence-transformers is sync heavy
         def _sync_embed(t):
             model = _load_embed_model()
             vec = model.encode(t)
             return vec.tolist()
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _sync_embed, text)
+        vec = await loop.run_in_executor(None, _sync_embed, text)
+        if cache_key is not None:
+            await redis_client.cache_set_json(cache_key, vec, settings.embed_cache_ttl_s)
+        return vec
 
     async def embed_many(self, texts: List[str]):
         def _sync_embed_many(ts):

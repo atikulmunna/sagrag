@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     enable_synthesis: bool = True
     rate_limit_per_minute: int = 60
     llm_max_concurrent: int = 2
+
+    # Redis (all best-effort: every feature degrades gracefully if Redis is
+    # unreachable). Empty redis_url disables Redis entirely.
+    redis_url: str = "redis://redis:6379/0"
+    redis_rate_limit_enabled: bool = True
+    redis_cache_enabled: bool = True
+    query_cache_ttl_s: int = 300
+    embed_cache_ttl_s: int = 86400
+    ingest_queue_name: str = "sagrag:ingest:jobs"
     tenant_isolation: bool = False
     learning_export_path: str = "/data/learning/train.jsonl"
     learning_min_rating: int = 4
