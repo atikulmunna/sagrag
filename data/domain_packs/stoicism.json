@@ -1,0 +1,45 @@
+{
+  "name": "stoicism",
+  "description": "Roman/Greek Stoic philosophy corpus (Seneca, Marcus Aurelius, Epictetus, ...).",
+  "authors": [
+    "seneca",
+    "marcus",
+    "aurelius",
+    "epictetus",
+    "hierocles",
+    "musonius",
+    "rufus",
+    "cato",
+    "zeno",
+    "chrysippus"
+  ],
+  "author_stopwords": [
+    "stoic",
+    "stoics",
+    "stoicism",
+    "philosophy",
+    "philosopher",
+    "guidance",
+    "ethics",
+    "roman",
+    "advice"
+  ],
+  "query_stopwords": [
+    "does",
+    "say",
+    "about",
+    "handle"
+  ],
+  "term_synonyms": {
+    "fear": ["fear", "fears", "afraid", "anxiety", "anxious", "terror", "dread", "timor", "metus"],
+    "death": ["death", "die", "dying", "mortality", "mors"]
+  },
+  "planner_hints": [
+    {
+      "triggers": ["fear", "anxiety", "worry"],
+      "intent": "stoic-guidance",
+      "hypotheses": ["User seeks Stoic emotional guidance"],
+      "queries": ["Stoic advice on fear", "Seneca fear wisdom"]
+    }
+  ]
+}

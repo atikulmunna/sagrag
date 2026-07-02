@@ -4,7 +4,26 @@ Tests import app modules by bare name (e.g. `import synthesis`); `app/` is put
 on sys.path via [tool.pytest.ini_options] pythonpath in pyproject.toml.
 """
 
+import os
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _domain_packs_dir(monkeypatch):
+    """Point domain-pack loading at the shipped data/domain_packs so unit tests
+    reflect real default behavior (in the container /data/domain_packs is
+    mounted; on the host it's the repo dir)."""
+    import domain_packs
+    from config import settings
+
+    packs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "domain_packs")
+    monkeypatch.setattr(settings, "domain_packs_path", packs_dir)
+    domain_packs._PACKS_CACHE = None
+    domain_packs._PACKS_MTIME = None
+    yield
+    domain_packs._PACKS_CACHE = None
+    domain_packs._PACKS_MTIME = None
 
 
 @pytest.fixture

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import redis_client
+import domain_packs
 from ingestion import ingest_folder
 from speculative import plan_query
 from agents import run_agents, route_domain, apply_policy_filter, apply_freshness_filter, apply_policy_rules, author_lexical_search
@@ -27,22 +28,6 @@ def _parse_blocklist(value):
     if isinstance(value, str):
         return [v.strip().lower() for v in value.split(",") if v.strip()]
     return []
-
-_AUTHOR_STOPWORDS = {
-    "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with",
-    "what", "why", "how", "who", "where", "when", "which", "whom", "whose",
-    "stoic", "stoics", "stoicism", "philosophy", "philosopher", "guidance",
-    "ethics", "roman", "advice",
-}
-_QUERY_STOPWORDS = {
-    "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with",
-    "what", "why", "how", "who", "where", "when", "which", "whom", "whose",
-    "does", "say", "about", "handle",
-}
-_TERM_SYNONYMS = {
-    "fear": ["fear", "fears", "afraid", "anxiety", "anxious", "terror", "dread", "timor", "metus"],
-    "death": ["death", "die", "dying", "mortality", "mors"],
-}
 
 def _policy_signature() -> str:
     """Stable signature of the config-level policy so cached answers are
@@ -72,7 +57,7 @@ def _query_cache_key(query, prefs, tenant) -> str:
     return f"sagrag:query:{digest}"
 
 def _merged_term_synonyms() -> dict[str, list[str]]:
-    merged = dict(_TERM_SYNONYMS)
+    merged = domain_packs.term_synonyms()
     extra = settings.query_term_synonyms or {}
     if isinstance(extra, dict):
         for k, v in extra.items():
@@ -111,31 +96,45 @@ def _extract_author_mentions(query: str) -> list[str]:
     if not query:
         return []
     q = query.lower()
-    terms = set()
+    stopwords = domain_packs.author_stopwords()
+    # Primary: explicitly configured authors (domain packs + author index) and
+    # domain keywords present in the query.
+    configured = set()
+    known = domain_packs.authors() | set(_load_author_index().keys())
+    for name in known:
+        name_l = str(name).strip().lower()
+        if len(name_l) >= 3 and name_l not in stopwords and name_l in q:
+            configured.add(name_l)
     for keywords in (settings.domain_keywords or {}).values():
         for kw in keywords:
             kw_l = str(kw).strip().lower()
-            if not kw_l or len(kw_l) < 3 or kw_l in _AUTHOR_STOPWORDS:
+            if not kw_l or len(kw_l) < 3 or kw_l in stopwords:
                 continue
             if kw_l in q:
-                terms.add(kw_l)
-    for token in re.findall(r"[A-Za-z][A-Za-z\\-]+", query):
+                configured.add(kw_l)
+    if configured:
+        return sorted(configured)
+    # Fallback (low-confidence): capitalized tokens, only when nothing is
+    # configured — this is a heuristic, not the primary signal.
+    fallback = set()
+    for token in re.findall(r"[A-Za-z][A-Za-z\-]+", query):
         if token[0].isupper():
             t = token.lower()
-            if len(t) >= 3 and t not in _AUTHOR_STOPWORDS:
-                terms.add(t)
-    return sorted(terms)
+            if len(t) >= 3 and t not in stopwords:
+                fallback.add(t)
+    return sorted(fallback)
 
 def _extract_query_terms(query: str, author_terms: list[str]) -> list[str]:
     if not query:
         return []
     terms = []
+    stopwords = domain_packs.query_stopwords()
     author_set = {t.lower() for t in author_terms}
-    for token in re.findall(r"[A-Za-z][A-Za-z\\-]+", query):
+    for token in re.findall(r"[A-Za-z][A-Za-z\-]+", query):
         t = token.lower()
         if len(t) < 3:
             continue
-        if t in _QUERY_STOPWORDS or t in author_set:
+        if t in stopwords or t in author_set:
             continue
         terms.append(t)
     # expand with simple synonyms

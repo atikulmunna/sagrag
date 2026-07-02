@@ -12,6 +12,7 @@ __pycache__/
 *.sqlite3
 data/*
 !data/eval/
+!data/domain_packs/
 infra/hf_cache/
 dist/
 build/

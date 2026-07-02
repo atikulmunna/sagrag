@@ -2,6 +2,7 @@
 import json
 import re
 from llm_client import llm
+import domain_packs
 
 def _safe_json_extract(text: str):
     try:
@@ -30,16 +31,18 @@ Return JSON with keys:
     except Exception:
         pass
 
-    # fallback rules
+    # Fallback rules from domain packs (no domain logic hard-coded here).
     intent = "general"
     hypotheses = []
     queries = []
     q = user_query.lower()
-    if any(w in q for w in ["fear", "anxiety", "worry"]):
-        intent = "stoic-guidance"
-        hypotheses.append("User seeks Stoic emotional guidance")
-        queries.append("Stoic advice on fear")
-        queries.append("Seneca fear wisdom")
+    for rule in domain_packs.planner_rules():
+        triggers = [str(t).strip().lower() for t in (rule.get("triggers") or [])]
+        if any(t and t in q for t in triggers):
+            if rule.get("intent"):
+                intent = rule["intent"]
+            hypotheses.extend(rule.get("hypotheses") or [])
+            queries.extend(rule.get("queries") or [])
     if not queries:
         queries.append(user_query)
     return {"intent": intent, "hypotheses": hypotheses, "queries": queries, "constraints": {}}

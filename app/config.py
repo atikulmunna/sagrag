@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     domain_fallbacks: list[str] = []
     domain_min_keyword_hits: int = 2
     query_term_synonyms: dict[str, list[str]] = {}
+    # Directory of domain-pack JSON files (authors, stopwords, synonyms,
+    # planner hints). Ships with data/domain_packs/stoicism.json.
+    domain_packs_path: str = "/data/domain_packs"
     author_index_path: str = "/data/author_index.json"
     min_results_count: int = 3
     min_top_rerank_score: float = -12.0
