@@ -3,6 +3,10 @@
 Speculative -> Agentic -> Graph RAG backend with FastAPI, Qdrant, Elasticsearch, and Neo4j.
 This repo implements the full SAG-RAG pipeline and a local Docker Compose stack.
 
+**Docs:** component + data-flow reference in [`docs/architecture.md`](docs/architecture.md).
+When the backend is running, the live API schema is at **`/docs`** (Swagger UI)
+and **`/redoc`**.
+
 Architecture diagram
 
 ```mermaid
@@ -326,3 +330,47 @@ committed — see `.env.example` for the shape (with placeholder values only).
 Provide real keys via the environment or a secret store; for Compose, prefer
 [Docker secrets](https://docs.docker.com/engine/swarm/secrets/) or an injected
 env file over baking values into images.
+
+## API reference
+
+The full, always-current endpoint schema is served by FastAPI's built-in OpenAPI:
+
+- **Swagger UI:** http://localhost:8000/docs
+- **ReDoc:** http://localhost:8000/redoc
+- **Raw schema:** http://localhost:8000/openapi.json
+
+For a narrative walk-through of the endpoint surface, config reference, and the
+failure-tag taxonomy, see [`docs/architecture.md`](docs/architecture.md).
+
+## Evaluation
+
+A small labeled query set lives in `data/eval/queries.jsonl`. Score a running
+stack with:
+
+```bash
+python tools/eval_metrics.py --base-url http://localhost:8000 \
+  --queries data/eval/queries.jsonl --k 5 --report docs/eval_report.md
+```
+
+This produces a Markdown report (`docs/eval_report.md`, git-ignored/generated)
+with retrieval recall@k / hit-rate and answer-quality scores (LLM-judge
+faithfulness plus a lexical-overlap baseline). See
+[`data/eval/README.md`](data/eval/README.md) for the query-set schema.
+
+## Known limitations / research extensions
+
+- **Graph reasoning depth** — entities, claims, relations, contradictions, and
+  simple path signals; no multi-hop GNN reasoning or learned traversal yet.
+- **Evaluation scope** — the bundled eval set is small and single-domain
+  (stoicism); scores are indicative, not benchmark-grade.
+- **Single-node infra** — Qdrant / Elasticsearch / Neo4j / Redis are single-node
+  via Compose. Redis is best-effort (rate limit + cache + queue degrade to
+  in-process); the ingest worker is in-process (`asyncio`), not yet a separate
+  distributed consumer.
+- **Training** — LoRA / fine-tuning is out of scope; `learning/export` only emits
+  high-rated interactions as training data.
+- **Route duplication** — endpoints are mounted at both `/v1/*` and `/*` for
+  compatibility; the root alias is a known, intentional redundancy.
+
+See [`docs/architecture.md`](docs/architecture.md#known-limitations--research-extensions)
+for details.
