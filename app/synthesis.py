@@ -159,6 +159,89 @@ def _format_fallback_answer(picks, author_terms, author_gap):
         return _clean_answer_text(prefix + " ".join(sentences[:2]))
     return _clean_answer_text(" ".join(sentences[:2]))
 
+def _pick_evidence(evidence, judge_output, author_terms=None, author_gap=False):
+    """Select the evidence items to ground an answer on: judge-trusted ids
+    when available, else the top few. Under an author gap, prefer non-author
+    passages. Shared by the streaming path and provenance builder."""
+    trusted = []
+    if isinstance(judge_output, dict):
+        trusted = judge_output.get("trusted_ids") or []
+    by_id = {e.get("id"): e for e in evidence}
+    picks = [by_id[t] for t in trusted if t in by_id]
+    if not picks:
+        picks = evidence[:3]
+    if author_terms and author_gap:
+        def _is_author(e):
+            s = (e.get("source") or "").lower()
+            t = (e.get("text") or "").lower()
+            return any(a in s or a in t for a in author_terms)
+        non_author = [e for e in picks if not _is_author(e)]
+        if non_author:
+            picks = non_author
+    return picks
+
+
+def build_stream_provenance(evidence, judge_output, author_terms=None, author_gap=False):
+    """Compute provenance server-side for the streaming path (the model streams
+    prose, not JSON, so provenance can't come from the model output)."""
+    picks = _pick_evidence(evidence, judge_output, author_terms, author_gap)
+    return [
+        {
+            "id": p.get("id"),
+            "source": p.get("source"),
+            "offset_start": p.get("offset_start"),
+            "offset_end": p.get("offset_end"),
+        }
+        for p in picks
+        if p.get("offset_start") is not None and p.get("offset_end") is not None and p.get("source")
+    ]
+
+
+async def synthesize_answer_stream(query, evidence, judge_output, author_terms=None, author_gap=False):
+    """Stream a plain-prose answer as text deltas (no JSON contract).
+
+    Yields incremental token strings. If the model produces nothing (or errors),
+    yields a single formatted fallback built from the evidence so the client
+    always receives an answer. Provenance/confidence are computed separately by
+    the caller via build_stream_provenance / the judge confidence.
+    """
+    started = time.monotonic()
+    picks = _pick_evidence(evidence, judge_output, author_terms, author_gap)
+    snippets = [{"text": (p.get("text") or "")[:350], "source": p.get("source")} for p in picks[:3]]
+    author_hint = ""
+    if author_terms:
+        author_hint = f"Author focus: {author_terms}. "
+        if author_gap:
+            author_hint += "No direct keyword match from that author; summarize nearby evidence and say so briefly. "
+    prompt = f"""You are a writing assistant. Answer the query in natural, plain English.
+
+Rules:
+- 2-4 sentences.
+- Do not output JSON, lists, dicts, code, or metadata.
+- Ground the answer in the evidence; do not invent facts.
+- Avoid repetition and filler.
+
+Query: {query}
+{author_hint}
+Evidence: {snippets}
+"""
+    got_any = False
+    try:
+        async for delta in llm.completion_stream(
+            prompt, max_tokens=settings.synthesis_max_tokens, temperature=0.2
+        ):
+            got_any = True
+            yield delta
+    except Exception:
+        _LOG.exception("synthesis_stream_failed")
+    if not got_any:
+        fallback = _format_fallback_answer(picks, author_terms, author_gap)
+        if fallback:
+            yield fallback
+    latency_ms = int((time.monotonic() - started) * 1000)
+    record_synthesis("stream" if got_any else "stream_fallback", latency_ms)
+
+
 async def synthesize_answer(query, evidence, judge_output, author_terms=None, author_gap=False):
     started = time.monotonic()
     def _finish(payload: dict, outcome: str):

@@ -1,6 +1,7 @@
 # app/llm_client.py
 import asyncio
 import hashlib
+import json
 import random
 import contextlib
 from typing import List
@@ -77,6 +78,44 @@ class OllamaREST:
                 backoff = backoff + random.uniform(0, 0.25)
                 await asyncio.sleep(backoff)
 
+    async def completion_stream(self, prompt: str, max_tokens: int = 512, temperature: float | None = None):
+        """Yield response text deltas from Ollama's streaming generate endpoint.
+
+        Free-text only (no JSON contract): callers stream plain prose. Errors
+        propagate to the caller, which is expected to handle fallback.
+        """
+        options: dict = {"num_predict": max_tokens}
+        if temperature is not None:
+            options["temperature"] = temperature
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": True,
+            "options": options,
+        }
+        span_cm = _TRACER.start_as_current_span("llm.completion_stream") if _TRACER else contextlib.nullcontext()
+        with span_cm as span:
+            if span:
+                span.set_attribute("llm.model", self.model)
+                span.set_attribute("llm.provider", "ollama")
+                span.set_attribute("llm.stream", True)
+            async with self._sema:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("POST", f"{self.base_url}/api/generate", json=payload) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if not line.strip():
+                                continue
+                            try:
+                                data = json.loads(line)
+                            except Exception:
+                                continue
+                            chunk = data.get("response")
+                            if chunk:
+                                yield chunk
+                            if data.get("done"):
+                                break
+
 class LLMClient:
     """Facade: generation (Ollama REST) + local embeddings (SentenceTransformer)."""
     def __init__(self):
@@ -94,6 +133,10 @@ class LLMClient:
         return await self.gen.completion(
             prompt, max_tokens=max_tokens, format=format, temperature=temperature
         )
+
+    async def completion_stream(self, prompt: str, max_tokens: int = 512, temperature: float | None = None):
+        async for chunk in self.gen.completion_stream(prompt, max_tokens=max_tokens, temperature=temperature):
+            yield chunk
 
     # EMBEDDINGS (local)
     async def embed(self, text: str):

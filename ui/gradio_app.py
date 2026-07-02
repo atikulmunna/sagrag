@@ -8,11 +8,50 @@ import requests
 
 API_BASE = os.getenv("SAG_RAG_API_BASE", "http://backend:8000").rstrip("/")
 QUERY_URL = f"{API_BASE}/v1/query"
+STREAM_URL = f"{API_BASE}/v1/query/stream"
 TIMEOUT_S = float(os.getenv("SAG_RAG_UI_TIMEOUT_S", "90"))
 
 
 def _pretty(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, indent=2)
+
+
+def stream_query(user_id: str, query: str):
+    """Consume the SSE endpoint and progressively yield the answer text."""
+    user_id = (user_id or "").strip() or "u1"
+    query = (query or "").strip()
+    if not query:
+        yield "Please enter a query."
+        return
+
+    acc = ""
+    event = None
+    try:
+        with requests.post(
+            STREAM_URL,
+            json={"user_id": user_id, "query": query},
+            stream=True,
+            timeout=TIMEOUT_S,
+        ) as resp:
+            resp.raise_for_status()
+            for raw in resp.iter_lines(decode_unicode=True):
+                if not raw:
+                    continue
+                line = raw.strip()
+                if line.startswith("event:"):
+                    event = line[len("event:") :].strip()
+                elif line.startswith("data:"):
+                    try:
+                        data = json.loads(line[len("data:") :].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    if event == "token":
+                        acc += data.get("text", "")
+                        yield acc
+                    elif event == "final":
+                        yield data.get("answer") or acc
+    except requests.RequestException as e:
+        yield f"Request failed: {e}"
 
 
 def run_query(user_id: str, query: str):
@@ -60,7 +99,9 @@ with gr.Blocks(title="SAG-RAG Gradio UI") as demo:
             scale=4,
         )
 
-    run_btn = gr.Button("Run Query", variant="primary")
+    with gr.Row():
+        run_btn = gr.Button("Run Query", variant="primary")
+        stream_btn = gr.Button("Stream Answer")
 
     answer = gr.Textbox(label="Answer", lines=5)
     with gr.Row():
@@ -75,9 +116,19 @@ with gr.Blocks(title="SAG-RAG Gradio UI") as demo:
     run_btn.click(
         run_query,
         inputs=[user_id, query],
-        outputs=[answer, explain_trace, confidence, retrieval_failures, top_results, retrieval_stats],
+        outputs=[
+            answer,
+            explain_trace,
+            confidence,
+            retrieval_failures,
+            top_results,
+            retrieval_stats,
+        ],
     )
+    # Streaming only updates the Answer box (tokens arrive progressively);
+    # the diagnostics come from the buffered "Run Query" path.
+    stream_btn.click(stream_query, inputs=[user_id, query], outputs=[answer])
 
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.queue().launch(server_name="0.0.0.0", server_port=7860)

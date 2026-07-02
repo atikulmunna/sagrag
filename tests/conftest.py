@@ -39,9 +39,10 @@ class FakeLLM:
     throw). Records prompts for assertions.
     """
 
-    def __init__(self, responses=None, raises=None):
+    def __init__(self, responses=None, raises=None, stream_chunks=None):
         self.responses = list(responses or [])
         self.raises = raises
+        self.stream_chunks = list(stream_chunks or [])
         self.calls = []
 
     async def completion(self, prompt, max_tokens=512, **kwargs):
@@ -54,3 +55,10 @@ class FakeLLM:
         if len(self.responses) == 1:
             return self.responses[0]
         return self.responses.pop(0)
+
+    async def completion_stream(self, prompt, max_tokens=512, **kwargs):
+        self.calls.append({"prompt": prompt, "max_tokens": max_tokens, "stream": True, **kwargs})
+        if self.raises is not None:
+            raise self.raises
+        for chunk in self.stream_chunks:
+            yield chunk
