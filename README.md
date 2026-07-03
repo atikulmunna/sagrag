@@ -107,7 +107,7 @@ flowchart LR
 <p align="center">
   <img src="assets/sagrag-ui.png" alt="SAG-RAG UI: grounded answer with provenance and confidence" width="820" />
 </p>
-<p align="center"><em>Figure: the SAG-RAG UI — a grounded answer with a confidence score and provenance (source + character offsets), plus an explain trace and retrieval diagnostics.</em></p>
+<p align="center"><em>Figure: the SAG-RAG UI - a grounded answer with a confidence score and provenance (source + character offsets), plus an explain trace and retrieval diagnostics.</em></p>
 
 What we built
 - End-to-end SAG-RAG pipeline: speculative planning, multi-agent retrieval, re-ranking, graph reasoning, judge, and synthesis with provenance.
@@ -283,11 +283,11 @@ cd infra
 docker compose --profile observability up
 ```
 
-- **Prometheus** — http://localhost:9090 (scrapes `backend:8000/metrics`).
-- **Grafana** — http://localhost:3000 (anonymous viewer enabled; admin/admin).
+- **Prometheus** - http://localhost:9090 (scrapes `backend:8000/metrics`).
+- **Grafana** - http://localhost:3000 (anonymous viewer enabled; admin/admin).
   A provisioned "SAG-RAG Overview" dashboard renders request rate/latency,
   retrieval failures, synthesis outcomes/latency p95, and hallucination risk.
-- **OTel collector** — receives OTLP traces on `4317`/`4318`. Set `OTEL_ENABLED=true`
+- **OTel collector** - receives OTLP traces on `4317`/`4318`. Set `OTEL_ENABLED=true`
   (and `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317`) so the backend
   exports spans; the collector logs them (add a Jaeger/Tempo exporter to visualize).
 
@@ -297,7 +297,7 @@ Config lives in `infra/prometheus.yml`, `infra/otel-collector.yaml`, and
 <p align="center">
   <img src="assets/grafana-overview.png" alt="SAG-RAG Overview Grafana dashboard" width="820" />
 </p>
-<p align="center"><em>Figure: the provisioned "SAG-RAG Overview" Grafana dashboard — request rate, latency p95, retrieval failures by tag, and synthesis outcomes, scraped live from <code>/metrics</code>.</em></p>
+<p align="center"><em>Figure: the provisioned "SAG-RAG Overview" Grafana dashboard - request rate, latency p95, retrieval failures by tag, and synthesis outcomes, scraped live from <code>/metrics</code>.</em></p>
 
 ## Security (API-key auth + tenants)
 
@@ -324,7 +324,7 @@ curl -sS -X POST http://localhost:8000/v1/query \
 ```
 
 **Tenant binding.** Set `TENANT_ISOLATION=true` alongside auth so the tenant is
-taken from the authenticated key and enforced **server-side** — a `tenant` field
+taken from the authenticated key and enforced **server-side** - a `tenant` field
 in the request body is ignored for authenticated requests, so a caller cannot
 override it. Without auth, the body `tenant` (falling back to `user_id`) is used
 as before.
@@ -336,11 +336,11 @@ as before.
 > `ingestion.py` and the collection selection in `agents.py`). So with domain
 > routing enabled, authenticated tenants querying the same domain read the **same**
 > corpus. For strict per-tenant isolation across domains, change the namespace
-> scheme to compose both (e.g. `docs_{tenant}_{domain}`) — this is a deliberate,
+> scheme to compose both (e.g. `docs_{tenant}_{domain}`) - this is a deliberate,
 > tested default, not an oversight.
 
 **Secrets handling.** `.env` and `infra/.env` are git-ignored and must never be
-committed — see `.env.example` for the shape (with placeholder values only).
+committed - see `.env.example` for the shape (with placeholder values only).
 Provide real keys via the environment or a secret store; for Compose, prefer
 [Docker secrets](https://docs.docker.com/engine/swarm/secrets/) or an injected
 env file over baking values into images.
@@ -373,17 +373,17 @@ faithfulness plus a lexical-overlap baseline). See
 
 ## Known limitations / research extensions
 
-- **Graph reasoning depth** — entities, claims, relations, contradictions, and
+- **Graph reasoning depth** - entities, claims, relations, contradictions, and
   simple path signals; no multi-hop GNN reasoning or learned traversal yet.
-- **Evaluation scope** — the bundled eval set is small and single-domain
+- **Evaluation scope** - the bundled eval set is small and single-domain
   (stoicism); scores are indicative, not benchmark-grade.
-- **Single-node infra** — Qdrant / Elasticsearch / Neo4j / Redis are single-node
+- **Single-node infra** - Qdrant / Elasticsearch / Neo4j / Redis are single-node
   via Compose. Redis is best-effort (rate limit + cache + queue degrade to
   in-process); the ingest worker is in-process (`asyncio`), not yet a separate
   distributed consumer.
-- **Training** — LoRA / fine-tuning is out of scope; `learning/export` only emits
+- **Training** - LoRA / fine-tuning is out of scope; `learning/export` only emits
   high-rated interactions as training data.
-- **Route duplication** — endpoints are mounted at both `/v1/*` and `/*` for
+- **Route duplication** - endpoints are mounted at both `/v1/*` and `/*` for
   compatibility; the root alias is a known, intentional redundancy.
 
 See [`docs/architecture.md`](docs/architecture.md#known-limitations--research-extensions)
