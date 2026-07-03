@@ -16,6 +16,30 @@ def _pretty(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, indent=2)
 
 
+def _provenance_md(items: Any) -> str:
+    """Render provenance as a compact, readable evidence list."""
+    if not items:
+        return "_No provenance returned._"
+    rows = ["| # | Source | Character span |", "|---|---|---|"]
+    for i, p in enumerate(items, 1):
+        if not isinstance(p, dict):
+            continue
+        src = p.get("source", "?")
+        a, b = p.get("offset_start"), p.get("offset_end")
+        span = f"{a}–{b}" if a is not None and b is not None else "—"
+        rows.append(f"| {i} | `{src}` | {span} |")
+    return "\n".join(rows)
+
+
+def _confidence_md(value: Any) -> str:
+    try:
+        pct = round(float(value) * 100)
+    except (TypeError, ValueError):
+        return "**Confidence:** n/a"
+    bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+    return f"**Confidence:** {pct}%  \n`{bar}`"
+
+
 def stream_query(user_id: str, query: str):
     """Consume the SSE endpoint and progressively yield the answer text."""
     user_id = (user_id or "").strip() or "u1"
@@ -58,7 +82,7 @@ def run_query(user_id: str, query: str):
     user_id = (user_id or "").strip() or "u1"
     query = (query or "").strip()
     if not query:
-        return "Please enter a query.", "", "", "[]", "[]", "{}"
+        return "Please enter a query.", "", "", "", "", "[]", "[]", "{}"
 
     try:
         resp = requests.post(
@@ -80,51 +104,74 @@ def run_query(user_id: str, query: str):
 
     answer = data.get("answer", "")
     explain_trace = str(data.get("explain_trace", ""))
-    confidence = str(data.get("confidence", ""))
+    confidence = _confidence_md(data.get("confidence"))
+    provenance = _provenance_md(data.get("provenance"))
+    domain = f"**Domain:** `{data.get('domain', 'unknown')}`  ·  **Cache:** `{data.get('cache', 'miss')}`"
     retrieval_failures = _pretty(data.get("retrieval_failures", []))
     top_results = _pretty((data.get("results") or [])[:3])
     retrieval_stats = _pretty(data.get("retrieval_stats", {}))
-    return answer, explain_trace, confidence, retrieval_failures, top_results, retrieval_stats
+    return (
+        answer,
+        confidence,
+        provenance,
+        domain,
+        explain_trace,
+        retrieval_failures,
+        top_results,
+        retrieval_stats,
+    )
 
 
-with gr.Blocks(title="SAG-RAG Gradio UI") as demo:
-    gr.Markdown("# SAG-RAG Demo")
-    gr.Markdown("Queries the FastAPI backend and shows answer, trace, failures, and top evidence.")
+_THEME = gr.themes.Soft(primary_hue="indigo", secondary_hue="slate")
+
+with gr.Blocks(title="SAG-RAG", theme=_THEME) as demo:
+    gr.Markdown(
+        "# 🏛️ SAG-RAG\n"
+        "**Speculative → Agentic → Graph RAG.** Grounded answers with "
+        "provenance, a confidence score, and an explainable trace — served by "
+        "the FastAPI backend over Qdrant · Elasticsearch · Neo4j."
+    )
 
     with gr.Row():
-        user_id = gr.Textbox(label="User ID", value="u1")
+        user_id = gr.Textbox(label="User ID", value="u1", scale=1)
         query = gr.Textbox(
-            label="Query",
+            label="Ask a question",
             value="What does Seneca say about fear and how to handle it?",
-            scale=4,
+            scale=5,
         )
 
     with gr.Row():
-        run_btn = gr.Button("Run Query", variant="primary")
-        stream_btn = gr.Button("Stream Answer")
+        run_btn = gr.Button("Run Query", variant="primary", scale=1)
+        stream_btn = gr.Button("⚡ Stream Answer", scale=1)
 
-    answer = gr.Textbox(label="Answer", lines=5)
-    with gr.Row():
-        explain_trace = gr.Textbox(label="Explain Trace")
-        confidence = gr.Textbox(label="Confidence")
+    answer = gr.Textbox(label="Answer", lines=6, show_copy_button=True)
 
     with gr.Row():
-        retrieval_failures = gr.Code(label="Retrieval Failures", language="json")
-        retrieval_stats = gr.Code(label="Retrieval Stats", language="json")
-    top_results = gr.Code(label="Top Results (first 3)", language="json")
+        with gr.Column(scale=1):
+            confidence = gr.Markdown("**Confidence:** —")
+            domain = gr.Markdown("")
+        with gr.Column(scale=2):
+            provenance = gr.Markdown("**Provenance** — grounded sources appear here after a query.")
 
-    run_btn.click(
-        run_query,
-        inputs=[user_id, query],
-        outputs=[
-            answer,
-            explain_trace,
-            confidence,
-            retrieval_failures,
-            top_results,
-            retrieval_stats,
-        ],
-    )
+    explain_trace = gr.Textbox(label="Explain trace", lines=2)
+
+    with gr.Accordion("🔎 Retrieval diagnostics & evidence", open=False):
+        with gr.Row():
+            retrieval_failures = gr.Code(label="Retrieval failures", language="json")
+            retrieval_stats = gr.Code(label="Retrieval stats", language="json")
+        top_results = gr.Code(label="Top results (first 3)", language="json")
+
+    _outputs = [
+        answer,
+        confidence,
+        provenance,
+        domain,
+        explain_trace,
+        retrieval_failures,
+        top_results,
+        retrieval_stats,
+    ]
+    run_btn.click(run_query, inputs=[user_id, query], outputs=_outputs)
     # Streaming only updates the Answer box (tokens arrive progressively);
     # the diagnostics come from the buffered "Run Query" path.
     stream_btn.click(stream_query, inputs=[user_id, query], outputs=[answer])

@@ -1,3 +1,8 @@
 gradio==4.44.0
+# gradio 4.44 uses the older Starlette TemplateResponse signature; newer
+# fastapi/starlette (unpinned) pull in 1.x and crash on startup. Pin to the
+# versions gradio 4.44 was built against.
+fastapi==0.112.2
+starlette==0.38.2
 requests>=2.31.0
 huggingface_hub==0.25.2

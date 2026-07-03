@@ -105,9 +105,9 @@ flowchart LR
 ```
 
 <p align="center">
-  <img src="assets/sagrag-demo.png" alt="SAG-RAG Gradio demo" width="760" />
+  <img src="assets/sagrag-ui.png" alt="SAG-RAG UI: grounded answer with provenance and confidence" width="820" />
 </p>
-<p align="center"><em>Figure: SAG-RAG Gradio demo with grounded answer, trace, and retrieval diagnostics.</em></p>
+<p align="center"><em>Figure: the SAG-RAG UI — a grounded answer with a confidence score and provenance (source + character offsets), plus an explain trace and retrieval diagnostics.</em></p>
 
 What we built
 - End-to-end SAG-RAG pipeline: speculative planning, multi-agent retrieval, re-ranking, graph reasoning, judge, and synthesis with provenance.
@@ -293,6 +293,11 @@ docker compose --profile observability up
 
 Config lives in `infra/prometheus.yml`, `infra/otel-collector.yaml`, and
 `infra/grafana/`.
+
+<p align="center">
+  <img src="assets/grafana-overview.png" alt="SAG-RAG Overview Grafana dashboard" width="820" />
+</p>
+<p align="center"><em>Figure: the provisioned "SAG-RAG Overview" Grafana dashboard — request rate, latency p95, retrieval failures by tag, and synthesis outcomes, scraped live from <code>/metrics</code>.</em></p>
 
 ## Security (API-key auth + tenants)
 
