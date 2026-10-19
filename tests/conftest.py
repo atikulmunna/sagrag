@@ -31,24 +31,9 @@ def reset_metrics():
     """Clear the module-level metric dicts so counter assertions are isolated."""
     import metrics
 
-    dict_names = [
-        "_request_count",
-        "_request_latency_ms",
-        "_request_latency_counts",
-        "_author_gap_count",
-        "_author_query_count",
-        "_retrieval_failure_count",
-        "_hallucination_risk_counts",
-        "_evidence_coverage_counts",
-        "_synthesis_outcome_count",
-        "_synthesis_latency_ms_total",
-        "_synthesis_latency_ms_counts",
-    ]
-    for name in dict_names:
-        getattr(metrics, name).clear()
+    metrics.reset()
     yield
-    for name in dict_names:
-        getattr(metrics, name).clear()
+    metrics.reset()
 
 
 class FakeLLM:
@@ -81,3 +66,56 @@ class FakeLLM:
             raise self.raises
         for chunk in self.stream_chunks:
             yield chunk
+
+
+@pytest.fixture
+def tmp_store(tmp_path, monkeypatch):
+    """Point every on-disk path (SQLite, exports, author index) at a temp dir."""
+    import store
+    from config import settings
+
+    monkeypatch.setattr(settings, "audit_db_path", str(tmp_path / "audit.db"))
+    monkeypatch.setattr(settings, "feedback_db_path", str(tmp_path / "feedback.db"))
+    monkeypatch.setattr(settings, "audit_export_path", str(tmp_path / "export" / "audit.jsonl"))
+    monkeypatch.setattr(settings, "learning_export_path", str(tmp_path / "export" / "train.jsonl"))
+    monkeypatch.setattr(settings, "author_index_path", str(tmp_path / "author_index.json"))
+    store._INITIALIZED.clear()
+    yield tmp_path
+    store._INITIALIZED.clear()
+
+
+@pytest.fixture
+def api_client(monkeypatch, tmp_store, reset_metrics):
+    """TestClient over the real app with external services switched off.
+
+    Lifespan is not run (no `with`), so nothing tries to reach Neo4j/Redis.
+    """
+    from fastapi.testclient import TestClient
+
+    import agents
+    import main
+    import redis_client
+    from config import settings
+
+    for name, value in {
+        "redis_url": "",
+        "redis_cache_enabled": False,
+        "redis_rate_limit_enabled": False,
+        "rate_limit_per_minute": 0,
+        "auth_enabled": False,
+        "tenant_isolation": False,
+        "graph_enabled": False,
+        "api_keys": "",
+        "api_key_map": {},
+        "trusted_proxy_hops": 0,
+        "domain_keywords": {},
+        "domain_aliases": {},
+        "domain_fallbacks": [],
+        "domain_index_map": {},
+    }.items():
+        monkeypatch.setattr(settings, name, value)
+    monkeypatch.setattr(redis_client, "_client", None)
+    monkeypatch.setattr(agents, "_list_domain_indices", lambda tenant=None: [])
+    main._rate_state.clear()
+    yield TestClient(main.app)
+    main._rate_state.clear()

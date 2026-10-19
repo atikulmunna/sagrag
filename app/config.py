@@ -1,7 +1,13 @@
 # app/config.py
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
+    # set env_file to the path of your .env as mounted in the container.
+    # Unknown keys are ignored so a .env shared with compose (HF_CACHE_DIR etc.)
+    # does not fail validation.
+    model_config = SettingsConfigDict(env_file="../.env", env_file_encoding="utf-8", extra="ignore")
+
     # Ollama settings (generation only)
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1"
@@ -9,21 +15,55 @@ class Settings(BaseSettings):
     embedding_model_name: str = "all-MiniLM-L6-v2"
     reranker_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     reranker_top_k: int = 10
+    # Cross-encoder cost grows with every candidate; fuse retriever rankings
+    # (reciprocal rank fusion) and rerank at most this many.
+    rerank_max_candidates: int = 40
+    # Load the embedding/reranker (and NLI) models in the background at
+    # startup so the first query does not pay for it.
+    warm_models_on_startup: bool = True
     judge_timeout_s: float = 8.0
     synthesis_timeout_s: float = 12.0
     retriever_timeout_s: float = 12.0
     judge_max_tokens: int = 150
     synthesis_max_tokens: int = 250
     max_evidence_snippets: int = 8
+    # LLM HTTP timeouts. The stream deadline bounds a whole streamed answer so a
+    # stalled Ollama cannot hold an LLM concurrency slot forever.
+    llm_connect_timeout_s: float = 5.0
+    llm_read_timeout_s: float = 60.0
+    synthesis_stream_timeout_s: float = 90.0
+    # Planner: the original query is always searched; at most this many
+    # queries (original included) fan out to the retrievers.
+    planner_max_queries: int = 4
+    # Claim-level verification: each answer sentence is checked against the
+    # passages it cites with a local NLI cross-encoder (downloads the model on
+    # first use). When it runs, hallucination risk is the unsupported fraction.
+    verify_enabled: bool = False
+    # Pinned to a revision whose tokenizer files load with the pinned
+    # transformers/tokenizers versions (the DeBERTa-v3 NLI models' current
+    # tokenizer.json does not).
+    verify_model_name: str = "cross-encoder/nli-MiniLM2-L6-H768"
+    verify_model_revision: str | None = "b95119ce93d3e065de6214e38cd4a97b0f2f2c6d"
+    verify_threshold: float = 0.5
+    verify_timeout_s: float = 15.0
+    # Withhold the answer when fewer than this fraction of its sentences are
+    # supported (0 disables abstention). Only applies when verification ran.
+    abstain_below_support: float = 0.0
+    # Reuse the NLI model to confirm graph contradictions at ingest time
+    # (falls back to the negation heuristic when the model is unavailable).
+    graph_nli_contradictions: bool = False
 
     # Service URLs (Docker service hostnames)
     qdrant_url: str = "http://qdrant:6333"
     elastic_url: str = "http://elastic:9200"
     neo4j_uri: str = "bolt://neo4j:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = "mysecurepassword"
+    neo4j_password: str = "changeme"
     graph_enabled: bool = False
     audit_db_path: str = "/data/audit/sag_rag_audit.db"
+    # Server-side destination for POST /audit/export with save=true. The client
+    # never chooses the path.
+    audit_export_path: str = "/data/audit/export.jsonl"
     graph_max_claims: int = 5
     graph_contradiction_window: int = 200
     graph_contradiction_overlap: float = 0.6
@@ -42,16 +82,24 @@ class Settings(BaseSettings):
     enable_judge: bool = True
     enable_synthesis: bool = True
     rate_limit_per_minute: int = 60
+    # Number of reverse proxies in front of the backend whose X-Forwarded-For
+    # entries are trusted (the web container's nginx counts as one). 0 = use
+    # the socket peer address and ignore the header entirely.
+    trusted_proxy_hops: int = 0
     llm_max_concurrent: int = 2
+    # Comma-separated browser origins allowed to call the API (only needed when
+    # the web UI is served from a different origin than the API).
+    cors_origins: str = ""
 
     # API-key auth (opt-in; default off so local/dev flows work without a key).
-    # When enabled, every endpoint except /health and /metrics requires a valid
-    # `x-api-key` header. Keys come from api_keys (comma-separated; each key's
-    # tenant defaults to the key itself) and/or api_key_map (explicit key ->
-    # tenant). Never commit real keys — supply them via env / a secret store.
-    # Enable tenant_isolation alongside to bind each key to its own tenant
-    # namespace, enforced server-side (a body-supplied tenant is then ignored
-    # for authenticated requests).
+    # When enabled, every endpoint except /health, /ready and /metrics requires
+    # a valid `x-api-key` header. Keys come from api_keys (comma-separated) and/or
+    # api_key_map (explicit key -> tenant). A key without an explicit tenant gets
+    # a tenant id derived from a hash of the key, so the secret never appears in
+    # storage names, logs, or metrics. Never commit real keys; supply them via
+    # env / a secret store. Enable tenant_isolation alongside to bind each key to
+    # its own tenant namespace, enforced server-side (a body-supplied tenant is
+    # then ignored for authenticated requests).
     auth_enabled: bool = False
     api_keys: str = ""
     api_key_map: dict[str, str] = {}
@@ -81,11 +129,15 @@ class Settings(BaseSettings):
     policy_domains_allow: list[str] = []
     policy_domains_block: list[str] = []
     policy_rules: list[dict] = []
+    # Explicit domain -> ES index overrides. Only honored in the shared layout
+    # (tenant isolation off); an isolated tenant always uses its own namespace.
     domain_index_map: dict[str, str] = {}
     domain_keywords: dict[str, list[str]] = {}
     domain_aliases: dict[str, list[str]] = {}
     domain_fallbacks: list[str] = []
     domain_min_keyword_hits: int = 2
+    # How long discovered domain indices are cached before re-listing ES.
+    domain_cache_ttl_s: float = 60.0
     query_term_synonyms: dict[str, list[str]] = {}
     # Directory of domain-pack JSON files (authors, stopwords, synonyms,
     # planner hints). Ships with data/domain_packs/stoicism.json.
@@ -96,9 +148,5 @@ class Settings(BaseSettings):
     confidence_alignment_floor: float = 0.55
     confidence_alignment_top_score_min: float = -6.0
 
-    class Config:
-        # set this to the path of your .env as mounted in the container.
-        env_file = "../.env"
-        env_file_encoding = "utf-8"
 
 settings = Settings()

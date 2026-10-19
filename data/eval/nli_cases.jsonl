@@ -1,0 +1,13 @@
+{"passages": {"enchiridion": "Some things are in our control and others not. Things in our control are opinion, pursuit, desire, aversion, and, in a word, whatever are our own actions. Things not in our control are body, property, reputation, command, and, in one word, whatever are not our own actions.", "meditations": "If thou art pained by any external thing, it is not this thing that disturbs thee, but thy own judgement about it. And it is in thy power to wipe out this judgement now.", "seneca_letter_13": "We suffer more often in imagination than in reality. What I advise you to do is not to be unhappy before the crisis comes; for it may be that the dangers before which you paled as if they were threatening you, will never come upon you."}, "source": "Public-domain translations: Epictetus, Enchiridion (Higginson, 1865); Marcus Aurelius, Meditations (Long, 1862); Seneca, Letter 13 (Gummere, 1917).", "sources": {"enchiridion": "epictetus_enchiridion.txt", "meditations": "marcus_meditations.txt", "seneca_letter_13": "seneca_moral_letters.txt"}}
+{"claim": "Epictetus says our opinions and desires are within our control.", "label": "supported"}
+{"claim": "He says reputation and property are not up to us.", "label": "supported"}
+{"claim": "Epictetus teaches that our body is entirely within our control.", "label": "contradicted"}
+{"claim": "The Stoics invented the printing press in Athens.", "label": "unsupported"}
+{"claim": "According to Marcus Aurelius, what disturbs us is our judgement about external things, not the things themselves.", "label": "supported"}
+{"claim": "Seneca wrote many letters to Lucilius.", "label": "unsupported"}
+{"claim": "External things are what really disturb us.", "label": "contradicted"}
+{"claim": "Seneca observes that we suffer more in imagination than in reality.", "label": "supported"}
+{"claim": "Many feared dangers never actually arrive.", "label": "supported"}
+{"claim": "Seneca advises us to be unhappy before a crisis comes.", "label": "contradicted"}
+{"claim": "Property is something we fully control.", "label": "contradicted"}
+{"claim": "The Meditations were written in Latin.", "label": "unsupported"}

@@ -1,14 +1,23 @@
 import asyncio
+import logging
+import threading
 
 from config import settings
 
+_LOG = logging.getLogger(__name__)
 _RERANKER = None
+_LOCK = threading.Lock()
+
+
 def _load_reranker():
     global _RERANKER
     if _RERANKER is None:
-        from sentence_transformers import CrossEncoder
-        _RERANKER = CrossEncoder(settings.reranker_model_name)
+        with _LOCK:
+            if _RERANKER is None:
+                from sentence_transformers import CrossEncoder
+                _RERANKER = CrossEncoder(settings.reranker_model_name)
     return _RERANKER
+
 
 async def rerank(query, docs, top_k=None):
     if not docs:
@@ -29,8 +38,8 @@ async def rerank(query, docs, top_k=None):
         return scored[:top_k]
 
     try:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _sync_rerank)
-    except Exception:
+        return await asyncio.to_thread(_sync_rerank)
+    except Exception as e:
         # fallback: return original docs (trimmed) if model load/predict fails
-        return docs[:top_k]
+        _LOG.warning("rerank_failed, using retrieval order: %r", e)
+        return [dict(d) for d in docs[:top_k]]

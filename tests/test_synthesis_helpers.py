@@ -71,3 +71,16 @@ def test_clamp_natural_answer_dedupes_and_bounds():
     # Near-duplicate collapsed to a single occurrence.
     assert out.count("Fear is a projection of the mind about the future.") == 1
     assert "Reason lets us examine" in out
+
+
+def test_normalize_dashes_in_generated_answers():
+    em, en = chr(0x2014), chr(0x2013)
+    assert (
+        synthesis.normalize_dashes(f"our judgments{em}actions and responses{em}and the rest.")
+        == "our judgments, actions and responses, and the rest."
+    )
+    assert synthesis.normalize_dashes(f"letters 1917{en}1925, pages 3 {em} 9") == (
+        "letters 1917 to 1925, pages 3 to 9"
+    )
+    assert synthesis.normalize_dashes(f"It ends here{em}.") == "It ends here."
+    assert em not in synthesis._clean_answer_text(f"Fear{em}imagined{em}fades.")

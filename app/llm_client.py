@@ -1,35 +1,58 @@
 # app/llm_client.py
 import asyncio
-import hashlib
+import contextlib
 import json
 import random
-import contextlib
-from typing import List
+
 import httpx
 
 from config import settings
-import redis_client
 try:
     from opentelemetry import trace
     _TRACER = trace.get_tracer(__name__)
 except Exception:
     _TRACER = None
 
-# Local embedder (fast, offline, deterministic)
-_EMBED_MODEL = None
-def _load_embed_model():
-    global _EMBED_MODEL
-    if _EMBED_MODEL is None:
-        from sentence_transformers import SentenceTransformer
-        _EMBED_MODEL = SentenceTransformer(settings.embedding_model_name)
-    return _EMBED_MODEL
+# Statuses worth retrying; any other non-200 (bad model name, bad request) fails fast.
+_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+def _timeout() -> httpx.Timeout:
+    return httpx.Timeout(
+        connect=settings.llm_connect_timeout_s,
+        read=settings.llm_read_timeout_s,
+        write=10.0,
+        pool=10.0,
+    )
+
 
 class OllamaREST:
-    """Minimal Ollama REST wrapper (generate endpoint)."""
+    """Minimal Ollama REST wrapper (generate endpoint).
+
+    One pooled httpx client and one concurrency semaphore per event loop. Every
+    request has connect/read timeouts, and streamed answers also have an overall
+    deadline, so a stalled Ollama can never hold a concurrency slot forever.
+    """
     def __init__(self):
         self.base_url = settings.ollama_url.rstrip("/")
         self.model = settings.ollama_model
-        self._sema = asyncio.Semaphore(settings.llm_max_concurrent)
+        self._loop = None
+        self._sema = None
+        self._client = None
+
+    def _resources(self):
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            self._loop = loop
+            self._sema = asyncio.Semaphore(settings.llm_max_concurrent)
+            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=_timeout())
+        return self._sema, self._client
+
+    async def aclose(self):
+        if self._client is not None:
+            await self._client.aclose()
+        self._client = None
+        self._loop = None
 
     async def completion(
         self,
@@ -60,29 +83,33 @@ class OllamaREST:
             # Ollama structured-output: "json" forces valid JSON; a dict is a JSON schema.
             if format is not None:
                 payload["format"] = format
+            sema, client = self._resources()
             attempt = 0
             while True:
                 attempt += 1
-                async with self._sema:
-                    async with httpx.AsyncClient(timeout=60) as client:
-                        resp = await client.post(f"{self.base_url}/api/generate", json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    text = data.get("response", "")
-                    return text
-                if attempt >= settings.llm_max_retries:
+                try:
+                    async with sema:
+                        resp = await client.post("/api/generate", json=payload)
+                except httpx.TransportError as e:
+                    err, retryable = e, True
+                else:
+                    if resp.status_code == 200:
+                        return resp.json().get("response", "")
                     if span:
                         span.set_attribute("http.status_code", resp.status_code)
-                    raise RuntimeError(f"Ollama error: {resp.status_code} {resp.text}")
-                backoff = settings.llm_retry_base_s * (2 ** (attempt - 1))
-                backoff = backoff + random.uniform(0, 0.25)
+                    err = RuntimeError(f"Ollama error: {resp.status_code} {resp.text[:200]}")
+                    retryable = resp.status_code in _RETRY_STATUS
+                if not retryable or attempt >= settings.llm_max_retries:
+                    raise err
+                backoff = settings.llm_retry_base_s * (2 ** (attempt - 1)) + random.uniform(0, 0.25)
                 await asyncio.sleep(backoff)
 
     async def completion_stream(self, prompt: str, max_tokens: int = 512, temperature: float | None = None):
         """Yield response text deltas from Ollama's streaming generate endpoint.
 
         Free-text only (no JSON contract): callers stream plain prose. Errors
-        propagate to the caller, which is expected to handle fallback.
+        (including the overall deadline) propagate to the caller, which is
+        expected to handle fallback.
         """
         options: dict = {"num_predict": max_tokens}
         if temperature is not None:
@@ -99,30 +126,41 @@ class OllamaREST:
                 span.set_attribute("llm.model", self.model)
                 span.set_attribute("llm.provider", "ollama")
                 span.set_attribute("llm.stream", True)
-            async with self._sema:
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("POST", f"{self.base_url}/api/generate", json=payload) as resp:
-                        resp.raise_for_status()
-                        async for line in resp.aiter_lines():
-                            if not line.strip():
-                                continue
-                            try:
-                                data = json.loads(line)
-                            except Exception:
-                                continue
-                            chunk = data.get("response")
-                            if chunk:
-                                yield chunk
-                            if data.get("done"):
-                                break
+            sema, client = self._resources()
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            async with sema:
+                # The read timeout bounds a stall between chunks; the deadline
+                # bounds a slow trickle.
+                async with client.stream("POST", "/api/generate", json=payload) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if loop.time() - started > settings.synthesis_stream_timeout_s:
+                            raise TimeoutError("llm stream deadline exceeded")
+                        if not line.strip():
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except ValueError:
+                            continue
+                        chunk = data.get("response")
+                        if chunk:
+                            yield chunk
+                        if data.get("done"):
+                            break
+
+    async def ping(self) -> bool:
+        _, client = self._resources()
+        resp = await client.get("/api/tags", timeout=3.0)
+        return resp.status_code == 200
+
 
 class LLMClient:
-    """Facade: generation (Ollama REST) + local embeddings (SentenceTransformer)."""
+    """Facade over the generation backend (Ollama REST). Embeddings live in
+    embeddings.py."""
     def __init__(self):
         self.gen = OllamaREST()
-        self._embed_model = None
 
-    # GENERATION
     async def completion(
         self,
         prompt: str,
@@ -138,36 +176,12 @@ class LLMClient:
         async for chunk in self.gen.completion_stream(prompt, max_tokens=max_tokens, temperature=temperature):
             yield chunk
 
-    # EMBEDDINGS (local)
-    async def embed(self, text: str):
-        # Best-effort cache keyed by (model, text) so repeated queries skip the
-        # encode; falls through to compute when Redis is disabled/unreachable.
-        cache_key = None
-        if settings.redis_cache_enabled:
-            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            cache_key = f"sagrag:embed:{settings.embedding_model_name}:{digest}"
-            cached = await redis_client.cache_get_json(cache_key)
-            if isinstance(cached, list):
-                return cached
+    async def ping(self) -> bool:
+        return await self.gen.ping()
 
-        # run embedding in thread pool because sentence-transformers is sync heavy
-        def _sync_embed(t):
-            model = _load_embed_model()
-            vec = model.encode(t)
-            return vec.tolist()
-        loop = asyncio.get_running_loop()
-        vec = await loop.run_in_executor(None, _sync_embed, text)
-        if cache_key is not None:
-            await redis_client.cache_set_json(cache_key, vec, settings.embed_cache_ttl_s)
-        return vec
+    async def aclose(self):
+        await self.gen.aclose()
 
-    async def embed_many(self, texts: List[str]):
-        def _sync_embed_many(ts):
-            model = _load_embed_model()
-            mats = model.encode(ts)
-            return [v.tolist() for v in mats]
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _sync_embed_many, texts)
 
 # single shared client instance
 llm = LLMClient()

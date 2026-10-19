@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import time
 from urllib import request
 
 
-def _post_json(url: str, payload: dict, timeout_s: int = 60):
+def _post_json(url: str, payload: dict, timeout_s: int = 60, api_key: str | None = None):
     data = json.dumps(payload).encode("utf-8")
-    req = request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["x-api-key"] = api_key
+    req = request.Request(url, data=data, headers=headers)
     with request.urlopen(req, timeout=timeout_s) as resp:
         body = resp.read().decode("utf-8")
     return json.loads(body)
@@ -42,6 +46,8 @@ def main():
     parser.add_argument("--queries", required=True, help="File with one query per line")
     parser.add_argument("--output", default="ablation_results.jsonl")
     parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--api-key", default=os.environ.get("SAGRAG_API_KEY"),
+                        help="x-api-key for auth-enabled stacks (default: $SAGRAG_API_KEY)")
     parser.add_argument("--score", action="store_true",
                         help="score the run against --ground-truth after writing")
     parser.add_argument("--ground-truth", default=None,
@@ -65,7 +71,7 @@ def main():
             t0 = time.time()
             payload = {"user_id": "ablation", "query": query}
             try:
-                resp = _post_json(f"{base}/v1/query", payload, timeout_s=args.timeout)
+                resp = _post_json(f"{base}/v1/query", payload, timeout_s=args.timeout, api_key=args.api_key)
                 elapsed = int((time.time() - t0) * 1000)
                 results = resp.get("results") or []
                 # Ordered list of retrieved source files (for recall@k scoring)
@@ -83,6 +89,9 @@ def main():
                     "answer": resp.get("answer"),
                     "confidence": resp.get("confidence"),
                     "hallucination_risk": resp.get("hallucination_risk"),
+                    "hallucination_risk_method": resp.get("hallucination_risk_method"),
+                    "supported_ratio": resp.get("supported_ratio"),
+                    "query_id": resp.get("query_id"),
                     "retrieval_failures": resp.get("retrieval_failures"),
                     "author_gap": resp.get("author_gap"),
                     "sources": sources,

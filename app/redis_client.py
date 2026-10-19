@@ -90,3 +90,23 @@ async def enqueue_json(queue: str, payload) -> bool:
     except Exception as e:
         _LOG.warning("redis_enqueue_failed: %s", e)
         return False
+
+
+async def ping() -> bool:
+    """True if Redis answers (raises when unreachable, for readiness checks)."""
+    client = await get_redis()
+    if client is None:
+        return False
+    return bool(await client.ping())
+
+
+async def close():
+    """Close the cached client (application shutdown)."""
+    global _client
+    if _client is not None:
+        try:
+            closer = getattr(_client, "aclose", None) or _client.close
+            await closer()
+        except Exception as e:  # pragma: no cover - best-effort shutdown
+            _LOG.warning("redis_close_failed: %s", e)
+        _client = None

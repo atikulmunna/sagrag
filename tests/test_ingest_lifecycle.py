@@ -17,14 +17,24 @@ def test_target_names_base():
     assert ingestion._target_names(None, None) == ("docs", "docs_index")
 
 
+def test_target_names_domain_shared_layout():
+    # Tenant isolation off: the original docs_{domain} layout is kept.
+    assert ingestion._target_names(None, "stoicism") == ("docs_stoicism", "docs_index_stoicism")
+
+
 def test_target_names_tenant():
-    assert ingestion._target_names("acme", None) == ("docs_acme", "docs_index_acme")
+    assert ingestion._target_names("acme", None) == ("docs_t_acme", "docs_index_t_acme")
 
 
-def test_target_names_domain_resets_off_base():
-    # A domain resets names off the base, dropping the tenant suffix (preserved
-    # legacy behavior).
-    assert ingestion._target_names("acme", "stoicism") == ("docs_stoicism", "docs_index_stoicism")
+def test_target_names_tenant_and_domain_compose():
+    # Regression: a domain used to reset the name to docs_{domain}, so every
+    # tenant shared domain data and a domain named like a tenant reached that
+    # tenant's private namespace.
+    assert ingestion._target_names("acme", "stoicism") == (
+        "docs_t_acme__d_stoicism",
+        "docs_index_t_acme__d_stoicism",
+    )
+    assert ingestion._target_names("globex", "acme") != ingestion._target_names("acme", None)
 
 
 # --- _batch_upsert_qdrant ---------------------------------------------------
@@ -52,8 +62,13 @@ def test_batch_upsert_swallows_errors():
         def upsert(self, **kwargs):
             raise RuntimeError("qdrant down")
 
-    # Should not raise (best-effort ingest).
-    ingestion._batch_upsert_qdrant(Boom(), "docs", [{"id": 1}], batch_size=10)
+    # Should not raise (best-effort ingest), but the failure is reported.
+    errors = []
+    written = ingestion._batch_upsert_qdrant(
+        Boom(), "docs", [{"id": 1}], batch_size=10, errors=errors
+    )
+    assert written == 0
+    assert errors and errors[0]["stage"] == "qdrant_upsert"
 
 
 # --- ingest_jobs ------------------------------------------------------------

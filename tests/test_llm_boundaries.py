@@ -22,7 +22,8 @@ async def test_plan_query_success(monkeypatch):
     monkeypatch.setattr(speculative.llm, "completion", fake.completion)
     plan = await speculative.plan_query("some query")
     assert plan["intent"] == "lookup"
-    assert plan["queries"] == ["q1"]
+    # The original query is always searched, ahead of the planner's rewrites.
+    assert plan["queries"] == ["some query", "q1"]
 
 
 async def test_plan_query_falls_back_on_error(monkeypatch):
@@ -76,7 +77,7 @@ async def test_judge_requests_structured_output(monkeypatch):
     fake = FakeLLM(responses=['{"confidence": 0.7, "trusted_ids": ["a"], "notes": "ok"}'])
     monkeypatch.setattr(judge.llm, "completion", fake.completion)
     await judge.judge_evidence("q", [{"id": "a", "text": "x"}], [], None, None)
-    assert fake.calls[0]["format"] == "json"
+    assert fake.calls[0]["format"] == judge.JUDGE_SCHEMA
     assert fake.calls[0]["temperature"] == 0
 
 
@@ -130,7 +131,7 @@ async def test_synthesize_requests_structured_output(monkeypatch):
     monkeypatch.setattr(synthesis.llm, "completion", fake.completion)
     await synthesis.synthesize_answer("q", _EVIDENCE, {"confidence": 0.6, "trusted_ids": ["a"]})
     # The main synthesis call requests JSON with deterministic temperature.
-    assert fake.calls[0]["format"] == "json"
+    assert fake.calls[0]["format"] == synthesis.SYNTHESIS_SCHEMA
     assert fake.calls[0]["temperature"] == 0
 
 
@@ -142,7 +143,7 @@ async def test_naturalizer_stays_free_text(monkeypatch):
     await synthesis.synthesize_answer("q", _EVIDENCE, {"confidence": 0.3, "trusted_ids": ["a"]})
     # First call is the structured synthesis attempt; a later naturalizer call
     # (if any) is free-text.
-    assert fake.calls[0]["format"] == "json"
+    assert fake.calls[0]["format"] == synthesis.SYNTHESIS_SCHEMA
     naturalizer_calls = [c for c in fake.calls[1:]]
     assert all(c.get("format") is None for c in naturalizer_calls)
 

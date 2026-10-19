@@ -21,12 +21,12 @@ def test_qdrant_points_variants():
 
 
 def test_route_domain_prefers_constraint(monkeypatch):
-    monkeypatch.setattr(agents, "_list_domain_indices", lambda: [])
+    monkeypatch.setattr(agents, "_list_domain_indices", lambda tenant=None: [])
     assert agents.route_domain("anything", constraints={"domain": "Finance"}) == "finance"
 
 
 def test_route_domain_keyword_scoring(monkeypatch):
-    monkeypatch.setattr(agents, "_list_domain_indices", lambda: [])
+    monkeypatch.setattr(agents, "_list_domain_indices", lambda tenant=None: [])
     monkeypatch.setattr(agents.settings, "domain_keywords", {"stoicism": ["seneca", "stoic"]})
     monkeypatch.setattr(agents.settings, "domain_aliases", {})
     monkeypatch.setattr(agents.settings, "domain_min_keyword_hits", 2)

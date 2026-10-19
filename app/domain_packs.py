@@ -104,6 +104,16 @@ def term_synonyms() -> dict:
     return merged
 
 
+def pack_names() -> list:
+    """Domain names declared by the packs (``"name"`` field)."""
+    names = []
+    for pack in _load_packs():
+        name = str(pack.get("name") or "").strip().lower()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def planner_rules() -> list:
     """Rule-based planner hints (trigger -> intent/hypotheses/queries) used as a
     fallback when the LLM planner is unavailable."""

@@ -1,8 +1,65 @@
 # app/graph.py
-from neo4j import GraphDatabase
+"""Neo4j knowledge graph: chunks, claims, entities, relations, contradictions.
+
+Every Chunk, Claim and RELATES edge carries a ``tenant`` key ("" in the shared
+layout) and every read filters on it, so graph signals never cross tenants.
+Nodes written before tenant keys existed have no ``tenant`` property and are
+treated as shared ("") via ``coalesce``.
+"""
+import logging
+import threading
+
+import namespaces
 from config import settings
 
-driver = GraphDatabase.driver(settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password))
+_LOG = logging.getLogger(__name__)
+_DRIVER = None
+_LOCK = threading.Lock()
+
+SCHEMA_STATEMENTS = (
+    "CREATE CONSTRAINT sagrag_chunk_id IF NOT EXISTS FOR (c:Chunk) REQUIRE c.id IS UNIQUE",
+    "CREATE CONSTRAINT sagrag_claim_id IF NOT EXISTS FOR (c:Claim) REQUIRE c.id IS UNIQUE",
+    "CREATE CONSTRAINT sagrag_entity_name IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE",
+    "CREATE INDEX sagrag_chunk_source IF NOT EXISTS FOR (c:Chunk) ON (c.source)",
+    "CREATE INDEX sagrag_claim_created IF NOT EXISTS FOR (c:Claim) ON (c.created_at)",
+)
+
+
+def get_driver():
+    global _DRIVER
+    if _DRIVER is None:
+        with _LOCK:
+            if _DRIVER is None:
+                from neo4j import GraphDatabase
+                _DRIVER = GraphDatabase.driver(
+                    settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password)
+                )
+    return _DRIVER
+
+
+def close_driver():
+    global _DRIVER
+    if _DRIVER is not None:
+        try:
+            _DRIVER.close()
+        finally:
+            _DRIVER = None
+
+
+def ensure_schema():
+    """Create uniqueness constraints (MERGE without them scans the whole label)."""
+    with get_driver().session() as session:
+        for stmt in SCHEMA_STATEMENTS:
+            try:
+                session.run(stmt).consume()
+            except Exception as e:
+                # e.g. duplicate legacy Entity names block the constraint.
+                _LOG.warning("neo4j schema statement failed (%s): %s", stmt, e)
+
+
+def tenant_key(tenant) -> str:
+    return namespaces.tenant_slug(tenant) if tenant else ""
+
 
 def _split_sentences(text: str, limit: int):
     # Simple splitter to avoid heavy dependencies in ingestion.
@@ -14,6 +71,7 @@ def _split_sentences(text: str, limit: int):
         if len(parts) >= limit:
             break
     return parts
+
 
 def _extract_relations_fallback(text: str, entities: list):
     relations = []
@@ -34,64 +92,84 @@ def _extract_relations_fallback(text: str, entities: list):
             break
     return relations
 
-def add_chunk_and_entities(chunk_id: str, text: str, entities: list):
-    def _work(tx):
-        tx.run("MERGE (c:Chunk {id:$id}) SET c.text=$text", id=chunk_id, text=text)
-        for ent in entities:
-            tx.run("MERGE (e:Entity {name:$name})", name=ent)
-            tx.run("""
-                MATCH (c:Chunk {id:$cid}), (e:Entity {name:$name})
-                MERGE (c)-[:MENTIONS]->(e)
-            """, cid=chunk_id, name=ent)
-    with driver.session() as session:
-        session.execute_write(lambda tx: _work(tx))
 
-def add_chunk_entities_claims(chunk_id: str, text: str, entities: list, relations: list | None = None, source: str | None = None):
+def add_chunk_entities_claims(
+    chunk_id: str,
+    text: str,
+    entities: list,
+    relations: list | None = None,
+    source: str | None = None,
+    tenant: str | None = None,
+):
+    tkey = tenant_key(tenant)
     claims = _split_sentences(text, settings.graph_max_claims)
-    claim_meta = []
     if relations is None:
         relations = _extract_relations_fallback(text, entities)
+    claim_rows = []
+    for idx, claim in enumerate(claims):
+        claim_lower = claim.lower()
+        claim_rows.append({
+            "id": f"{chunk_id}::claim::{idx}",
+            "text": claim,
+            "entities": [e for e in entities if e.lower() in claim_lower],
+        })
+    rel_rows = [{"a": a, "p": p, "b": b} for a, p, b in relations]
+
     def _work(tx):
-        tx.run("MERGE (c:Chunk {id:$id}) SET c.text=$text, c.source=$source", id=chunk_id, text=text, source=source)
-        # Batch entity creation + MENTIONS with UNWIND to cut round-trips.
+        tx.run(
+            "MERGE (c:Chunk {id:$id}) SET c.text=$text, c.source=$source, c.tenant=$tenant",
+            id=chunk_id, text=text, source=source, tenant=tkey,
+        )
         if entities:
             tx.run("UNWIND $names AS name MERGE (e:Entity {name:name})", names=entities)
-            tx.run("""
+            tx.run(
+                """
                 MATCH (c:Chunk {id:$cid})
                 UNWIND $names AS name
                 MATCH (e:Entity {name:name})
                 MERGE (c)-[:MENTIONS]->(e)
-            """, cid=chunk_id, names=entities)
-        for idx, claim in enumerate(claims):
-            claim_id = f"{chunk_id}::claim::{idx}"
-            tx.run("MERGE (cl:Claim {id:$id}) SET cl.text=$text", id=claim_id, text=claim)
-            tx.run("""
-                MATCH (c:Chunk {id:$cid}), (cl:Claim {id:$clid})
+                """,
+                cid=chunk_id, names=entities,
+            )
+        if claim_rows:
+            tx.run(
+                """
+                MATCH (c:Chunk {id:$cid})
+                UNWIND $claims AS claim
+                MERGE (cl:Claim {id: claim.id})
+                SET cl.text = claim.text, cl.tenant = $tenant, cl.created_at = timestamp()
                 MERGE (c)-[:SUPPORTS]->(cl)
-            """, cid=chunk_id, clid=claim_id)
-            claim_meta.append((claim_id, claim))
-            for ent in entities:
-                if ent.lower() in claim.lower():
-                    tx.run("""
-                        MATCH (cl:Claim {id:$clid}), (e:Entity {name:$name})
-                        MERGE (cl)-[:MENTIONS]->(e)
-                    """, clid=claim_id, name=ent)
-        for a, pred, b in relations:
-            tx.run("""
-                MATCH (a:Entity {name:$a}), (b:Entity {name:$b})
-                MERGE (a)-[:RELATES {predicate:$pred}]->(b)
-            """, a=a, b=b, pred=pred)
-    with driver.session() as session:
-        session.execute_write(lambda tx: _work(tx))
-        _add_contradictions(session, claim_meta, entities)
+                WITH cl, claim
+                UNWIND claim.entities AS name
+                MATCH (e:Entity {name:name})
+                MERGE (cl)-[:MENTIONS]->(e)
+                """,
+                cid=chunk_id, claims=claim_rows, tenant=tkey,
+            )
+        if rel_rows:
+            tx.run(
+                """
+                UNWIND $rels AS rel
+                MATCH (a:Entity {name: rel.a}), (b:Entity {name: rel.b})
+                MERGE (a)-[:RELATES {predicate: rel.p, tenant: $tenant}]->(b)
+                """,
+                rels=rel_rows, tenant=tkey,
+            )
+
+    with get_driver().session() as session:
+        session.execute_write(_work)
+        _add_contradictions(session, [(c["id"], c["text"]) for c in claim_rows], entities, tkey)
+
 
 def _negate(text: str):
     negators = [" not ", " no ", " never ", " cannot ", " can't ", " won't ", " isn't ", " aren't ", " wasn't ", " weren't "]
     lowered = f" {text.lower()} "
     return any(n in lowered for n in negators)
 
+
 def _normalize(text: str):
     return " ".join(text.lower().split())
+
 
 def _token_set(text: str):
     tokens = []
@@ -99,6 +177,7 @@ def _token_set(text: str):
         if t.isalpha() and len(t) > 2:
             tokens.append(t)
     return set(tokens)
+
 
 def _rough_match(a: str, b: str):
     # Allow paraphrases: require token overlap, not exact match.
@@ -110,6 +189,7 @@ def _rough_match(a: str, b: str):
     min_size = min(len(ta), len(tb))
     return overlap >= max(3, int(settings.graph_contradiction_overlap * min_size))
 
+
 def _extract_numbers(text: str):
     nums = []
     token = ""
@@ -119,51 +199,35 @@ def _extract_numbers(text: str):
         elif token:
             try:
                 nums.append(float(token))
-            except Exception:
+            except ValueError:
                 pass
             token = ""
     if token:
         try:
             nums.append(float(token))
-        except Exception:
+        except ValueError:
             pass
     return nums
 
+
 def _entity_overlap(text_a: str, text_b: str, entities: list):
-    if not entities:
-        return False
     la = text_a.lower()
     lb = text_b.lower()
-    hits = 0
-    for ent in entities:
-        ent_l = ent.lower()
-        if ent_l in la and ent_l in lb:
-            hits += 1
-        if hits >= 1:
-            return True
-    return False
+    return any(ent.lower() in la and ent.lower() in lb for ent in entities or [])
 
-def _add_contradictions(session, claim_meta, entities):
-    if not claim_meta:
-        return
-    # best-effort: match recent claims with same core text but opposing negation
-    claim_ids = [c[0] for c in claim_meta]
-    query = """
-    MATCH (cl:Claim)
-    WHERE NOT cl.id IN $ids
-    RETURN cl.id AS id, cl.text AS text
-    ORDER BY cl.id DESC
-    LIMIT $limit
+
+def find_contradictions(claim_meta, recent, entities, nli=None, threshold: float = 0.5):
+    """Pairs (new_id, old_id) whose claims look contradictory.
+
+    Candidates need heavily overlapping wording plus a shared entity (or
+    differing numbers). With ``nli`` (a function returning entailment and
+    contradiction probabilities per (premise, hypothesis) pair), a candidate
+    is a contradiction when either direction is judged contradictory; without
+    it, opposite negation is the fallback heuristic.
     """
-    recent = session.execute_read(lambda tx: tx.run(query, ids=claim_ids, limit=settings.graph_contradiction_window).data())
-    def _relate(tx, a_id, b_id):
-        tx.run("""
-            MATCH (a:Claim {id:$a}), (b:Claim {id:$b})
-            MERGE (a)-[:CONTRADICTS]->(b)
-        """, a=a_id, b=b_id)
+    candidates = []
     for new_id, new_text in claim_meta:
         new_norm = _normalize(new_text)
-        new_neg = _negate(new_text)
         new_nums = _extract_numbers(new_text)
         for r in recent:
             old_text = r.get("text") or ""
@@ -175,76 +239,178 @@ def _add_contradictions(session, claim_meta, entities):
                 old_nums = _extract_numbers(old_text)
                 if not new_nums or not old_nums or new_nums == old_nums:
                     continue
-            if _negate(old_text) != new_neg:
-                print(f"[graph] CONTRADICTS {new_id} -> {r.get('id')}")
-                session.execute_write(lambda tx: _relate(tx, new_id, r.get("id")))
+            candidates.append((new_id, new_text, r.get("id"), old_text))
+    if not candidates:
+        return []
+    if nli is not None:
+        try:
+            pairs = [(old, new) for _, new, _, old in candidates] + [(new, old) for _, new, _, old in candidates]
+            probs = nli(pairs)
+            n = len(candidates)
+            return [
+                (c[0], c[2])
+                for i, c in enumerate(candidates)
+                if max(probs[i]["contradiction"], probs[i + n]["contradiction"]) >= threshold
+            ]
+        except Exception as e:
+            _LOG.warning("nli contradiction check failed, using negation heuristic: %s", e)
+    return [(new_id, old_id) for new_id, new_text, old_id, old_text in candidates if _negate(old_text) != _negate(new_text)]
 
-def delete_source_from_graph(source: str):
-    """Delete a source's Chunk nodes and their per-chunk Claims. Shared Entity
-    nodes are left in place (harmless orphans)."""
+
+def _add_contradictions(session, claim_meta, entities, tkey: str):
+    if not claim_meta:
+        return
+    # Compare against this tenant's most recent claims only.
+    query = """
+    MATCH (cl:Claim)
+    WHERE coalesce(cl.tenant, '') = $tenant AND NOT cl.id IN $ids
+    RETURN cl.id AS id, cl.text AS text
+    ORDER BY cl.created_at DESC
+    LIMIT $limit
+    """
+    ids = [c[0] for c in claim_meta]
+    recent = session.execute_read(
+        lambda tx: tx.run(query, tenant=tkey, ids=ids, limit=settings.graph_contradiction_window).data()
+    )
+    nli = None
+    if settings.graph_nli_contradictions:
+        import verification
+        nli = verification.nli_probabilities
+    pairs = find_contradictions(claim_meta, recent, entities, nli=nli, threshold=settings.verify_threshold)
+    if not pairs:
+        return
+    rows = [{"a": a, "b": b} for a, b in pairs]
+    session.execute_write(lambda tx: tx.run(
+        """
+        UNWIND $rows AS row
+        MATCH (a:Claim {id: row.a}), (b:Claim {id: row.b})
+        MERGE (a)-[:CONTRADICTS]->(b)
+        """,
+        rows=rows,
+    ).consume())
+
+
+def delete_source_from_graph(source: str, tenant: str | None = None):
+    """Delete one tenant's Chunk nodes for a source and their Claims. Shared
+    Entity nodes are left in place (harmless orphans)."""
     q = """
     MATCH (c:Chunk {source:$source})
+    WHERE coalesce(c.tenant, '') = $tenant
     OPTIONAL MATCH (c)-[:SUPPORTS]->(cl:Claim)
     DETACH DELETE c, cl
     """
-    with driver.session() as session:
-        session.execute_write(lambda tx: tx.run(q, source=source))
+    with get_driver().session() as session:
+        session.execute_write(lambda tx: tx.run(q, source=source, tenant=tenant_key(tenant)).consume())
 
-def support_density_for_entities(entity_names: list):
+
+def support_density_for_entities(entity_names: list, tenant: str | None = None):
     q = """
     MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)
-    WHERE e.name IN $names
+    WHERE e.name IN $names AND coalesce(c.tenant, '') = $tenant
     RETURN e.name AS name, count(distinct c) AS chunk_count
     """
-    def _read(tx):
-        res = tx.run(q, names=entity_names)
-        return [{ "name": r["name"], "chunk_count": r["chunk_count"] } for r in res]
-    with driver.session() as session:
-        return session.execute_read(lambda tx: _read(tx))
+    with get_driver().session() as session:
+        return session.execute_read(
+            lambda tx: [
+                {"name": r["name"], "chunk_count": r["chunk_count"]}
+                for r in tx.run(q, names=entity_names, tenant=tenant_key(tenant))
+            ]
+        )
 
-def subgraph_for_chunks(chunk_ids: list, max_entities: int = 50):
+
+def subgraph_for_chunks(chunk_ids: list, max_entities: int = 50, tenant: str | None = None):
     if not chunk_ids:
         return {"chunks": [], "entities": []}
     q = """
     MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)
-    WHERE c.id IN $chunk_ids
+    WHERE c.id IN $chunk_ids AND coalesce(c.tenant, '') = $tenant
     RETURN c.id AS chunk_id, e.name AS entity
     LIMIT $limit
     """
-    def _read(tx):
-        res = tx.run(q, chunk_ids=chunk_ids, limit=max_entities)
-        return [{ "chunk_id": r["chunk_id"], "entity": r["entity"] } for r in res]
-    with driver.session() as session:
-        pairs = session.execute_read(lambda tx: _read(tx))
+    with get_driver().session() as session:
+        pairs = session.execute_read(
+            lambda tx: [
+                {"chunk_id": r["chunk_id"], "entity": r["entity"]}
+                for r in tx.run(q, chunk_ids=chunk_ids, limit=max_entities, tenant=tenant_key(tenant))
+            ]
+        )
     entities = sorted({p["entity"] for p in pairs})
     return {"chunks": chunk_ids, "entities": entities, "pairs": pairs}
 
-def graph_reasoner(chunk_ids: list, max_claims: int = 10, max_entities: int = 10):
+
+def summarize_reasoning(claims, contra, entities, chunk_scores, paths, relations):
+    """Pure post-processing of the reasoner's query rows (unit-testable)."""
+    contra_map = {r["id"]: r["contradict_count"] for r in contra}
+    for c in claims:
+        c["contradict_count"] = int(contra_map.get(c["id"], 0))
+    relation_strength = {}
+    relation_predicates = {}
+    for r in relations:
+        key = f"{r.get('src')}|{r.get('predicate')}|{r.get('dst')}"
+        relation_strength[key] = relation_strength.get(key, 0) + int(r.get("rel_count", 0))
+        sp_key = f"{r.get('src')}|{r.get('dst')}"
+        relation_predicates.setdefault(sp_key, set()).add(r.get("predicate"))
+    strong_relations = [
+        {"relation": k, "count": v}
+        for k, v in sorted(relation_strength.items(), key=lambda x: x[1], reverse=True)
+        if v >= 2
+    ]
+    conflict_pairs = [
+        {"pair": k, "predicates": sorted(preds)}
+        for k, preds in relation_predicates.items()
+        if len(preds) > 1
+    ]
+    evidence_scores = []
+    for row in chunk_scores:
+        support = int(row.get("support_count", 0))
+        contradict = int(row.get("contradict_count", 0))
+        entities_count = int(row.get("entity_count", 0))
+        score = support + (0.1 * entities_count) - (0.5 * contradict)
+        evidence_scores.append({
+            "chunk_id": row.get("chunk_id"),
+            "support_count": support,
+            "contradict_count": contradict,
+            "entity_count": entities_count,
+            "score": round(score, 3),
+        })
+    return {
+        "claims": claims,
+        "entity_density": entities,
+        "relations": relations,
+        "relation_strength": strong_relations,
+        "relation_conflicts": conflict_pairs,
+        "evidence_scores": evidence_scores,
+        "paths": paths,
+    }
+
+
+def graph_reasoner(chunk_ids: list, max_claims: int = 10, max_entities: int = 10, tenant: str | None = None):
     if not chunk_ids:
         return {"claims": [], "entity_density": []}
-    q_claims = """
+    scope = "c.id IN $chunk_ids AND coalesce(c.tenant, '') = $tenant"
+    q_claims = f"""
     MATCH (c:Chunk)-[:SUPPORTS]->(cl:Claim)
-    WHERE c.id IN $chunk_ids
+    WHERE {scope}
     RETURN cl.id AS id, cl.text AS text, count(distinct c) AS support_count
     ORDER BY support_count DESC
     LIMIT $limit
     """
-    q_contra = """
+    q_contra = f"""
     MATCH (c:Chunk)-[:SUPPORTS]->(cl:Claim)
-    WHERE c.id IN $chunk_ids
+    WHERE {scope}
     OPTIONAL MATCH (cl)-[:CONTRADICTS]->(other:Claim)
     RETURN cl.id AS id, count(distinct other) AS contradict_count
     """
-    q_entities = """
+    q_entities = f"""
     MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)
-    WHERE c.id IN $chunk_ids
+    WHERE {scope}
     RETURN e.name AS name, count(distinct c) AS chunk_count
     ORDER BY chunk_count DESC
     LIMIT $limit
     """
-    q_chunk_scores = """
+    q_chunk_scores = f"""
     MATCH (c:Chunk)
-    WHERE c.id IN $chunk_ids
+    WHERE {scope}
     OPTIONAL MATCH (c)-[:SUPPORTS]->(cl:Claim)
     OPTIONAL MATCH (cl)-[:CONTRADICTS]->(other:Claim)
     OPTIONAL MATCH (c)-[:MENTIONS]->(e:Entity)
@@ -253,70 +419,34 @@ def graph_reasoner(chunk_ids: list, max_claims: int = 10, max_entities: int = 10
            count(distinct other) AS contradict_count,
            count(distinct e) AS entity_count
     """
-    q_paths = """
+    q_paths = f"""
     MATCH (c:Chunk)-[:SUPPORTS]->(cl:Claim)-[:MENTIONS]->(e:Entity)
-    WHERE c.id IN $chunk_ids
-    MATCH (e)-[:RELATES]->(e2:Entity)
+    WHERE {scope}
+    MATCH (e)-[r:RELATES]->(e2:Entity)
+    WHERE coalesce(r.tenant, '') = $tenant
     RETURN c.id AS chunk_id, e.name AS src, e2.name AS dst, count(*) AS path_count
     ORDER BY path_count DESC
     LIMIT $limit
     """
-    q_relations = """
+    q_relations = f"""
     MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)-[r:RELATES]->(e2:Entity)
-    WHERE c.id IN $chunk_ids
+    WHERE {scope} AND coalesce(r.tenant, '') = $tenant
     RETURN e.name AS src, r.predicate AS predicate, e2.name AS dst, count(r) AS rel_count
     ORDER BY rel_count DESC
     LIMIT $limit
     """
+    tkey = tenant_key(tenant)
+
     def _read(tx):
-        claims = tx.run(q_claims, chunk_ids=chunk_ids, limit=max_claims).data()
-        contra = tx.run(q_contra, chunk_ids=chunk_ids).data()
-        entities = tx.run(q_entities, chunk_ids=chunk_ids, limit=max_entities).data()
-        chunk_scores = tx.run(q_chunk_scores, chunk_ids=chunk_ids).data()
-        paths = tx.run(q_paths, chunk_ids=chunk_ids, limit=max_entities).data()
-        relations = tx.run(q_relations, chunk_ids=chunk_ids, limit=max_entities).data()
-        contra_map = {r["id"]: r["contradict_count"] for r in contra}
-        for c in claims:
-            c["contradict_count"] = int(contra_map.get(c["id"], 0))
-        relation_strength = {}
-        relation_predicates = {}
-        for r in relations:
-            key = f"{r.get('src')}|{r.get('predicate')}|{r.get('dst')}"
-            relation_strength[key] = relation_strength.get(key, 0) + int(r.get("rel_count", 0))
-            sp_key = f"{r.get('src')}|{r.get('dst')}"
-            preds = relation_predicates.get(sp_key, set())
-            preds.add(r.get("predicate"))
-            relation_predicates[sp_key] = preds
-        strong_relations = [
-            {"relation": k, "count": v}
-            for k, v in sorted(relation_strength.items(), key=lambda x: x[1], reverse=True)
-            if v >= 2
-        ]
-        conflict_pairs = []
-        for k, preds in relation_predicates.items():
-            if len(preds) > 1:
-                conflict_pairs.append({"pair": k, "predicates": sorted(list(preds))})
-        evidence_scores = []
-        for row in chunk_scores:
-            support = int(row.get("support_count", 0))
-            contradict = int(row.get("contradict_count", 0))
-            entities_count = int(row.get("entity_count", 0))
-            score = support + (0.1 * entities_count) - (0.5 * contradict)
-            evidence_scores.append({
-                "chunk_id": row.get("chunk_id"),
-                "support_count": support,
-                "contradict_count": contradict,
-                "entity_count": entities_count,
-                "score": round(score, 3),
-            })
-        return {
-            "claims": claims,
-            "entity_density": entities,
-            "relations": relations,
-            "relation_strength": strong_relations,
-            "relation_conflicts": conflict_pairs,
-            "evidence_scores": evidence_scores,
-            "paths": paths,
-        }
-    with driver.session() as session:
-        return session.execute_read(lambda tx: _read(tx))
+        params = {"chunk_ids": chunk_ids, "tenant": tkey}
+        return summarize_reasoning(
+            tx.run(q_claims, limit=max_claims, **params).data(),
+            tx.run(q_contra, **params).data(),
+            tx.run(q_entities, limit=max_entities, **params).data(),
+            tx.run(q_chunk_scores, **params).data(),
+            tx.run(q_paths, limit=max_entities, **params).data(),
+            tx.run(q_relations, limit=max_entities, **params).data(),
+        )
+
+    with get_driver().session() as session:
+        return session.execute_read(_read)
