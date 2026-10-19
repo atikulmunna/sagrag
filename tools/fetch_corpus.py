@@ -106,6 +106,9 @@ def gutenberg_body(text: str) -> str:
 def clean_inline(text: str) -> str:
     """Remove page markers, footnote anchors/blocks, and underscore italics."""
     text = re.sub(r"\[Footnote:.*?\]", "", text, flags=re.S)
+    # Long writes glosses as "will ([Greek: proairesis])": drop the gloss and
+    # the parentheses around it, so no empty "()" is left behind.
+    text = re.sub(r"\s*\(\s*\[Greek:[^\]]*\]\s*\)", "", text)
     text = re.sub(r"\s*\[Greek:[^\]]*\]", "", text)
     text = re.sub(r"\{\d+\}", "", text)
     text = re.sub(r"\[Pg \d+\]", "", text)
