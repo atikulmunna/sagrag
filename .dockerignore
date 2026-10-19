@@ -1,0 +1,21 @@
+# Build context is the repo root; only app/, web/ and infra/nginx/ are copied.
+# Keep secrets, data, and model caches out of the context entirely.
+.git
+.github
+.env
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+data/
+infra/hf_cache/
+tests/
+tools/
+docs/
+assets/
+tasks.md
+CLAUDE.md
+ablation_results*.jsonl

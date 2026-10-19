@@ -1,5 +1,4 @@
 .env
-.env.example
 .venv
 __pycache__/
 *.pyc
@@ -19,3 +18,13 @@ build/
 *.egg-info/
 desktop.ini
 .DS_Store
+
+# local-only planning docs (never commit)
+tasks.md
+CLAUDE.md
+*srs*
+*SRS*
+
+# generated eval output
+ablation_results*.jsonl
+docs/eval_report.md

@@ -21,7 +21,13 @@ services:
     image: neo4j:5.13
     container_name: infra-neo4j
     environment:
-      - NEO4J_AUTH=neo4j/mysecurepassword
+      # Must match NEO4J_PASSWORD in ../.env (the backend's). Compose reads
+      # ${...} values from infra/.env or the shell, so set it there too.
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-changeme}
+      # Keep the dev stack inside a small Docker VM (Neo4j otherwise sizes its
+      # heap from all available memory).
+      - NEO4J_server_memory_heap_max__size=512m
+      - NEO4J_server_memory_pagecache_size=256m
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -39,10 +45,14 @@ services:
     container_name: sag-backend
     env_file:
       - ../.env
+    environment:
+      # nginx in the web container is one trusted proxy hop. If you publish
+      # port 8000 to untrusted clients, set this to 0 (they could spoof
+      # X-Forwarded-For to dodge rate limits).
+      - TRUSTED_PROXY_HOPS=1
     volumes:
-      - ../app:/app
       - ../data:/data
-      - ${HF_CACHE_DIR:-./hf_cache}:/root/.cache/huggingface
+      - ${HF_CACHE_DIR:-./hf_cache}:/hf_cache
     ports:
       - "8000:8000"
     extra_hosts:
@@ -53,20 +63,40 @@ services:
       - neo4j
       - redis
 
-  gradio:
+  web:
     build:
       context: ..
-      dockerfile: ui.Dockerfile
-    container_name: sag-gradio
-    environment:
-      - SAG_RAG_API_BASE=http://backend:8000
-      - SAG_RAG_UI_TIMEOUT_S=90
+      dockerfile: web.Dockerfile
+    container_name: sag-web
     ports:
-      - "7860:7860"
+      - "8080:8080"
     depends_on:
       - backend
 
-  # Observability stack — opt-in via: docker compose --profile observability up
+  # Local LLM on an NVIDIA GPU, opt-in via: docker compose --profile llm up
+  # Publishes 11434 on the host, so the backend's default
+  # OLLAMA_URL=http://host.docker.internal:11434 reaches it unchanged.
+  # Pull a model once: docker compose exec ollama ollama pull qwen2.5:7b
+  ollama:
+    image: ollama/ollama:0.40.6
+    container_name: sag-ollama
+    profiles: ["llm"]
+    environment:
+      # Keep the model in VRAM; reloading takes longer than the judge timeout.
+      - OLLAMA_KEEP_ALIVE=24h
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Observability stack, opt-in via: docker compose --profile observability up
   prometheus:
     image: prom/prometheus:v2.53.0
     container_name: sag-prometheus
@@ -106,3 +136,6 @@ services:
       - "4317:4317"
       - "4318:4318"
       - "8888:8888"
+
+volumes:
+  ollama:

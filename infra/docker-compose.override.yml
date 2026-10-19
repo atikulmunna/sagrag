@@ -1,0 +1,7 @@
+# Loaded automatically by `docker compose` in this directory (development).
+# Mounts the source so backend code edits apply on container restart. For a
+# production-like run without the mount: docker compose -f docker-compose.yml up
+services:
+  backend:
+    volumes:
+      - ../app:/app
