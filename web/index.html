@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>SAG-RAG</title>
+  <meta name="description" content="Ask questions of your document corpus and check every answer against the passages it came from.">
+  <link rel="icon" href="assets/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,400;0,500;0,700;1,400&family=Atkinson+Hyperlegible+Next:wght@400;600;700&display=swap">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="masthead">
+    <div class="masthead-inner">
+      <a class="brand" href="./" title="SAG-RAG">
+        <img src="assets/logo.png" alt="SAG-RAG" width="26" height="56">
+      </a>
+      <nav class="tabs" role="tablist" aria-label="Views">
+        <button class="tab" role="tab" id="tab-ask" aria-controls="view-ask" aria-selected="true">Ask</button>
+        <button class="tab" role="tab" id="tab-activity" aria-controls="view-activity" aria-selected="false" tabindex="-1">Activity</button>
+      </nav>
+      <button class="quiet-button settings-button" id="open-settings" type="button">
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.7 1.7 1l.4 2.5h4l.4-2.5c.6-.3 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6ZM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z" transform="translate(-1 0)"/></svg>
+        <span class="settings-label">Settings</span>
+      </button>
+    </div>
+    <p class="service-notice" id="service-notice" hidden></p>
+  </header>
+
+  <main id="main">
+    <section class="view" id="view-ask" role="tabpanel" aria-labelledby="tab-ask">
+      <form class="ask" id="ask-form" novalidate>
+        <label class="ask-label" for="question">Your question</label>
+        <textarea id="question" name="question" rows="2" maxlength="2000" required
+          placeholder="What does Seneca say about fear and how to handle it?"></textarea>
+        <div class="ask-row">
+          <label class="inline-field">
+            <span>Domain</span>
+            <select id="domain" name="domain">
+              <option value="">All domains</option>
+            </select>
+          </label>
+          <span class="hint" id="ask-hint">Ctrl + Enter to ask</span>
+          <button class="primary-button" id="ask-button" type="submit">Ask</button>
+        </div>
+        <p class="form-error" id="form-error" role="alert" hidden></p>
+      </form>
+
+      <section class="intro" id="intro">
+        <p class="intro-lede">Ask a question about the documents in your corpus. Every answer shows the passages it was built from, with their exact character positions, so you can check it.</p>
+        <h2 class="intro-heading">Example questions</h2>
+        <ul class="examples" id="examples"></ul>
+      </section>
+
+      <section class="result" id="result" hidden aria-labelledby="asked-question">
+        <ol class="rail" id="rail" aria-label="Pipeline progress"></ol>
+
+        <div class="reading">
+          <div class="primary">
+            <article class="sheet" aria-busy="false" id="sheet">
+              <h2 class="asked" id="asked-question"></h2>
+              <div class="answer" id="answer"></div>
+              <div class="sheet-footer" id="sheet-footer" hidden>
+                <div class="scores" id="scores"></div>
+                <div class="feedback" id="feedback">
+                  <span class="feedback-prompt">Was this answer useful?</span>
+                  <button class="quiet-button" type="button" data-rating="5">Helpful</button>
+                  <button class="quiet-button" type="button" data-rating="1">Not helpful</button>
+                  <span class="feedback-status" id="feedback-status" role="status"></span>
+                </div>
+              </div>
+            </article>
+
+            <details class="workings" id="workings" hidden>
+              <summary>How this answer was produced</summary>
+              <div class="workings-body" id="workings-body"></div>
+            </details>
+          </div>
+
+          <aside class="margin" aria-labelledby="sources-heading">
+            <h3 class="margin-heading" id="sources-heading">Cited passages</h3>
+            <ol class="notes" id="notes"></ol>
+          </aside>
+        </div>
+
+      </section>
+      <p class="visually-hidden" id="live-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="view" id="view-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
+      <div class="activity-head">
+        <h2>Recent questions</h2>
+        <button class="quiet-button" id="refresh-activity" type="button">Refresh</button>
+      </div>
+      <p class="activity-note" id="activity-error" role="alert" hidden></p>
+      <div class="table-wrap"><table class="ledger" id="audit-table">
+        <thead><tr><th scope="col">When</th><th scope="col">Question and answer</th><th scope="col">Domain</th><th scope="col" class="num">Confidence</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <h2 class="activity-subhead">Feedback</h2>
+      <div class="table-wrap"><table class="ledger" id="feedback-table">
+        <thead><tr><th scope="col">When</th><th scope="col">Question</th><th scope="col">Rating</th><th scope="col">Comment</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </section>
+  </main>
+
+  <dialog class="settings" id="settings">
+    <form method="dialog" id="settings-form">
+      <h2>Settings</h2>
+      <label class="field">
+        <span>API address</span>
+        <input id="setting-base" name="base" type="url" placeholder="Same address as this page" autocomplete="off">
+        <small>Leave empty when the page and the API are served together.</small>
+      </label>
+      <label class="field">
+        <span>API key</span>
+        <input id="setting-key" name="key" type="password" autocomplete="off">
+        <small>Only needed when the API requires keys. Kept for this browser tab only.</small>
+      </label>
+      <label class="field">
+        <span>Your name or ID</span>
+        <input id="setting-user" name="user" type="text" maxlength="128" autocomplete="nickname">
+        <small>Recorded with your questions and feedback.</small>
+      </label>
+      <fieldset class="field">
+        <legend>Theme</legend>
+        <div class="segmented">
+          <label><input type="radio" name="theme" value="light"> Light</label>
+          <label><input type="radio" name="theme" value="dark"> Dark</label>
+          <label><input type="radio" name="theme" value="system"> Match system</label>
+        </div>
+      </fieldset>
+      <div class="dialog-actions">
+        <button class="quiet-button" value="cancel" type="submit" formnovalidate>Cancel</button>
+        <button class="primary-button" value="save" type="submit">Save settings</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
