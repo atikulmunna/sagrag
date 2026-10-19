@@ -26,5 +26,5 @@ tqdm
 opentelemetry-api==1.25.0
 opentelemetry-sdk==1.25.0
 opentelemetry-exporter-otlp==1.25.0
-opentelemetry-instrumentation-fastapi==0.46b0
+opentelemetry-instrumentation-fastapi==0.66b1
 opentelemetry-instrumentation-requests==0.46b0
