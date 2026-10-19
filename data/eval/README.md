@@ -7,9 +7,9 @@ answer quality. Each row:
 {"query": "...", "expected_sources": ["file.txt", ...], "reference_answer": "..."}
 ```
 
-- `expected_sources` — source filenames that *should* be retrieved for the query
+- `expected_sources`: source filenames that *should* be retrieved for the query
   (matched case-insensitively against the basename of each `results[].source`).
-- `reference_answer` — a short gold answer used for lexical-overlap scoring and
+- `reference_answer`: a short gold answer used for lexical-overlap scoring and
   as context for the optional LLM judge.
 
 ## Running an evaluation
@@ -42,11 +42,11 @@ python tools/eval_metrics.py \
 
 ## Metrics
 
-- **recall@k** — fraction of `expected_sources` present in the top-k retrieved.
-- **hit_rate@k** — 1.0 if any expected source appears in the top-k.
-- **lexical_overlap** — token-F1 of the answer vs `reference_answer` (a cheap
+- **recall@k**: fraction of `expected_sources` present in the top-k retrieved.
+- **hit_rate@k**: 1.0 if any expected source appears in the top-k.
+- **lexical_overlap**: token-F1 of the answer vs `reference_answer` (a cheap
   baseline that works without the judge).
-- **faithfulness / relevance** — LLM-judge scores (0..1); `n/a` unless `--judge`.
+- **faithfulness / relevance**: LLM-judge scores (0..1); `n/a` unless `--judge`.
   The judge uses `format=json` + `temperature=0` so scores are reproducible.
 
 Pass `--base-urls` a comma-separated list to compare configurations
