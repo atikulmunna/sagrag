@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- build stage: compilers live here only -------------------------------
-FROM python:3.11-slim AS build
+FROM python:3.12-slim AS build
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -26,7 +26,7 @@ RUN pip install -r /tmp/requirements.txt
 RUN pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
 
 # ---- runtime stage ---------------------------------------------------------
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Match APP_UID to the owner of the bind-mounted data/HF cache dirs on Linux
 # hosts (docker build --build-arg APP_UID=$(id -u) ...).
